@@ -11,8 +11,8 @@ WITH softid_raw AS (
         idlog.MESSAGE
     FROM V_P_IDN_LOG idlog
     WHERE
-        idlog.LOG_DT >= TO_DATE(:start_date, 'YYYYMMDD')
-        AND idlog.LOG_DT < TO_DATE(:end_date, 'YYYYMMDD') + 1
+        idlog.LOG_DT >= TO_DATE(:start_date, 'YYYYMMDD') - 1
+        AND idlog.LOG_DT < TO_DATE(:end_date, 'YYYYMMDD') + 2
         AND idlog.EVENT IN ('LabelPrinted', 'UploadCollection')
         AND idlog.MESSAGE NOT LIKE 'RESCHEDUL%'
         AND idlog.MESSAGE NOT LIKE 'CANCEL%'
@@ -23,14 +23,14 @@ softid_agg AS (
         SPECIMEN_ID,
         MIN(CASE WHEN EVENT = 'LabelPrinted' THEN LOG_DT END) AS LABEL_DT,
         MIN(CASE WHEN EVENT = 'UploadCollection' THEN LOG_DT END) AS UPLOAD_DT,
-        MAX(PHLEB_ID) AS SOFTID_PHLEB_ID,
-        MAX(ROLE_ID) AS SOFTID_ROLE_ID,
-        MAX(DEVICE_ID) AS DEVICE_ID,
-        MAX(TERMINAL_ID) AS TERMINAL_ID
+        COALESCE(MAX(CASE WHEN EVENT = 'UploadCollection' THEN PHLEB_ID END), MAX(PHLEB_ID)) AS SOFTID_PHLEB_ID,
+        COALESCE(MAX(CASE WHEN EVENT = 'UploadCollection' THEN ROLE_ID END), MAX(ROLE_ID)) AS SOFTID_ROLE_ID,
+        COALESCE(MAX(CASE WHEN EVENT = 'UploadCollection' THEN DEVICE_ID END), MAX(DEVICE_ID)) AS DEVICE_ID,
+        COALESCE(MAX(CASE WHEN EVENT = 'UploadCollection' THEN TERMINAL_ID END), MAX(TERMINAL_ID)) AS TERMINAL_ID
     FROM softid_raw
     GROUP BY PATIENT_ID, SPECIMEN_ID
 )
-SELECT DISTINCT
+SELECT
     p.ID AS MRN,
     p.LAST_NAME,
     p.FIRST_NAME,
@@ -63,7 +63,7 @@ FROM V_P_LAB_PATIENT p
     INNER JOIN V_P_LAB_TUBE Tube 
         ON Tube.ORDER_AA_ID = o.AA_ID
         AND Tube.SPECIMEN_AA_ID = Spec.AA_ID
-    LEFT JOIN V_P_LAB_SPECIMEN_BARCODE bc 
+    INNER JOIN V_P_LAB_SPECIMEN_BARCODE bc
         ON bc.TUBE_AA_ID = Tube.AA_ID
         AND bc.CODE_TYPE = 'B'
         AND bc.SOURCE = 'L'
@@ -78,7 +78,6 @@ WHERE
     AND Spec.IS_COLLECTED = 'Y'
     AND NVL(Spec.IS_CANCELLED, 'N') = 'N'
     AND ot.CANCELLED_FLAG = 0
-    AND bc.CODE IS NOT NULL
     AND SUBSTR(p.ID, 2, 1) <> 'X'
     AND (:ordering_location IS NULL OR :ordering_location = '%' OR s_clinic.ORD_LOCATION_ID LIKE :ordering_location)
 ORDER BY
