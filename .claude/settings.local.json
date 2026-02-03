@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(where git:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(where:*)",
+      "Bash(C:UsersfedelirAppDataLocalProgramsPythonPython312python.exe --version)",
+      "Bash(\"C:\\\\Users\\\\fedelir\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" --version)",
+      "Bash(\"C:\\\\Users\\\\fedelir\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Scripts\\\\pip.exe\" install pdfplumber)",
+      "Bash(\"C:\\\\Users\\\\fedelir\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" -c:*)",
+      "Bash(\"C:\\\\Users\\\\fedelir\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" -c \"\n# Find lines with key columns after line 5618 \\(end of first V_P_LAB_TEST_RESULT block\\)\nwith open\\(r''C:\\\\Users\\\\fedelir\\\\Documents\\\\__extracted__\\\\SoftLab Patient Results Dictionary.txt'', ''r'', encoding=''utf-8''\\) as f:\n    lines = f.read\\(\\).split\\(''\\\\n''\\)\n\n# Search for STATE, TEST_ID, RESULT, PRIORITY, GROUP_TEST_ID etc. after line 5618\n# These might be in the continuation of the pipe-delimited table\nfor i in range\\(5618, min\\(5750, len\\(lines\\)\\)\\):\n    print\\(f''{i}: {lines[i]}''\\)\n\")",
+      "Bash(\"C:\\\\Users\\\\fedelir\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" -c \"\nwith open\\(r''C:\\\\Users\\\\fedelir\\\\Documents\\\\__extracted__\\\\SoftLab Patient Results Dictionary.txt'', ''r'', encoding=''utf-8''\\) as f:\n    lines = f.read\\(\\).split\\(''\\\\n''\\)\n# Print STATE definition context and TEST_PERFORMING_LOCATION\nfor i in range\\(6060, 6070\\):\n    print\\(f''{i}: {lines[i]}''\\)\nprint\\(''---''\\)\nfor i in range\\(6232, 6245\\):\n    print\\(f''{i}: {lines[i]}''\\)\n\")"
+    ]
+  }
+}
