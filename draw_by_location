@@ -1,0 +1,90 @@
+WITH softid_raw AS (
+    SELECT
+        idlog.PATIENT_ID,
+        idlog.SPECIMEN_ID,
+        idlog.PHLEB_ID,
+        idlog.ROLE_ID,
+        idlog.DEVICE_ID,
+        idlog.TERMINAL_ID,
+        idlog.LOG_DT,
+        idlog.EVENT,
+        idlog.MESSAGE
+    FROM V_P_IDN_LOG idlog
+    WHERE
+        idlog.LOG_DT >= TO_DATE(:start_date, 'YYYYMMDD')
+        AND idlog.LOG_DT < TO_DATE(:end_date, 'YYYYMMDD') + 1
+        AND idlog.EVENT IN ('LabelPrinted', 'UploadCollection')
+        AND idlog.MESSAGE NOT LIKE 'RESCHEDUL%'
+        AND idlog.MESSAGE NOT LIKE 'CANCEL%'
+),
+softid_agg AS (
+    SELECT
+        PATIENT_ID,
+        SPECIMEN_ID,
+        MIN(CASE WHEN EVENT = 'LabelPrinted' THEN LOG_DT END) AS LABEL_DT,
+        MIN(CASE WHEN EVENT = 'UploadCollection' THEN LOG_DT END) AS UPLOAD_DT,
+        MAX(PHLEB_ID) AS SOFTID_PHLEB_ID,
+        MAX(ROLE_ID) AS SOFTID_ROLE_ID,
+        MAX(DEVICE_ID) AS DEVICE_ID,
+        MAX(TERMINAL_ID) AS TERMINAL_ID
+    FROM softid_raw
+    GROUP BY PATIENT_ID, SPECIMEN_ID
+)
+SELECT DISTINCT
+    p.ID AS MRN,
+    p.LAST_NAME,
+    p.FIRST_NAME,
+    o.ID AS ORDNO,
+    o.ORDERED_DT,
+    s_clinic.ORD_LOCATION_ID AS ORDERING_LOCATION,
+    s_clinic.ID AS CLINIC_ID,
+    s_clinic.NAME AS CLINIC_NAME,
+    Spec.COLLECTION_DT,
+    Spec.DRAW_TYPE,
+    Spec.IS_COLLECTED,
+    bc.CODE AS SPECIMEN_BARCODE,
+    ot.TEST_ID,
+    CASE WHEN si.SOFTID_PHLEB_ID IS NOT NULL THEN 'Y' ELSE 'N' END AS HAS_SOFTID_DATA,
+    si.LABEL_DT AS SOFTID_LABEL_DT,
+    si.UPLOAD_DT AS SOFTID_UPLOAD_DT,
+    si.SOFTID_PHLEB_ID,
+    si.SOFTID_ROLE_ID,
+    si.DEVICE_ID,
+    si.TERMINAL_ID,
+    p.AA_ID AS PATIENT_AA_ID,
+    o.AA_ID AS ORDER_AA_ID,
+    Spec.AA_ID AS SPECIMEN_AA_ID,
+    Tube.AA_ID AS TUBE_AA_ID
+FROM V_P_LAB_PATIENT p
+    INNER JOIN V_P_LAB_STAY Stay ON Stay.PATIENT_AA_ID = p.AA_ID
+    INNER JOIN V_P_LAB_ORDER o ON o.STAY_AA_ID = Stay.AA_ID
+    INNER JOIN V_P_LAB_ORDERED_TEST ot ON ot.ORDER_AA_ID = o.AA_ID
+    INNER JOIN V_P_LAB_SPECIMEN Spec ON Spec.PATIENT_AA_ID = p.AA_ID
+    INNER JOIN V_P_LAB_TUBE Tube 
+        ON Tube.ORDER_AA_ID = o.AA_ID
+        AND Tube.SPECIMEN_AA_ID = Spec.AA_ID
+    LEFT JOIN V_P_LAB_SPECIMEN_BARCODE bc 
+        ON bc.TUBE_AA_ID = Tube.AA_ID
+        AND bc.CODE_TYPE = 'B'
+        AND bc.SOURCE = 'L'
+    LEFT JOIN V_S_LAB_CLINIC s_clinic 
+        ON o.ORDERING_CLINIC_ID = s_clinic.ID
+    LEFT JOIN softid_agg si 
+        ON si.PATIENT_ID = p.ID
+        AND si.SPECIMEN_ID = bc.CODE
+WHERE
+    Spec.COLLECTION_DT >= TO_DATE(:start_date, 'YYYYMMDD')
+    AND Spec.COLLECTION_DT < TO_DATE(:end_date, 'YYYYMMDD') + 1
+    AND Spec.IS_COLLECTED = 'Y'
+    AND NVL(Spec.IS_CANCELLED, 'N') = 'N'
+    AND ot.CANCELLED_FLAG = 0
+    AND bc.CODE IS NOT NULL
+    AND SUBSTR(p.ID, 2, 1) <> 'X'
+    AND (:ordering_location IS NULL OR :ordering_location = '%' OR s_clinic.ORD_LOCATION_ID LIKE :ordering_location)
+ORDER BY
+    Spec.COLLECTION_DT,
+    s_clinic.ORD_LOCATION_ID,
+    s_clinic.ID,
+    o.ID,
+    bc.CODE,
+    ot.TEST_ID;
