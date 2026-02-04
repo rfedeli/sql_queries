@@ -1,0 +1,48 @@
+-- Orders with >=1 non-cancelled test but 0 specimens linked via tube
+-- Parameters:
+--   :start_date  YYYYMMDD  inclusive
+--   :end_date    YYYYMMDD  inclusive
+WITH
+    specimens AS (
+        -- Non-cancelled specimens per order (routed through tube linkage)
+        SELECT
+            Tube.ORDER_AA_ID,
+            COUNT(DISTINCT Spec.AA_ID) AS specimens_collected
+        FROM V_P_LAB_TUBE Tube
+            INNER JOIN V_P_LAB_SPECIMEN Spec
+                ON Spec.AA_ID = Tube.SPECIMEN_AA_ID
+        WHERE
+            NVL(Spec.IS_CANCELLED, 'N') = 'N'
+        GROUP BY Tube.ORDER_AA_ID
+    ),
+    tests AS (
+        -- Non-cancelled ordered tests per order, dated via the parent order
+        SELECT
+            ot.ORDER_AA_ID,
+            o.ID     AS accession,
+            COUNT(*) AS tests_ordered
+        FROM V_P_LAB_ORDERED_TEST ot
+            INNER JOIN V_P_LAB_ORDER o
+                ON o.AA_ID = ot.ORDER_AA_ID
+        WHERE
+            o.ORDERED_DT            >= TO_DATE(:start_date, 'YYYYMMDD')
+            AND o.ORDERED_DT        <  TO_DATE(:end_date, 'YYYYMMDD') + 1
+            AND ot.CANCELLED_FLAG   = 0
+        GROUP BY ot.ORDER_AA_ID, o.ID
+    )
+SELECT
+    ts.accession                            AS ACCESSION,
+    1                                       AS TOTAL_ORDERS,
+    0                                       AS SPECIMENS_COLLECTED,
+    ts.tests_ordered                        AS TESTS_ORDERED
+FROM tests ts
+    LEFT JOIN specimens sp
+        ON sp.ORDER_AA_ID = ts.ORDER_AA_ID
+WHERE sp.specimens_collected IS NULL
+  AND EXISTS (
+      SELECT 1 FROM V_P_LAB_TEST_RESULT tr
+       WHERE tr.ORDER_AA_ID = ts.ORDER_AA_ID
+         AND tr.STATE        IN ('Final', 'Corrected')
+         AND tr.RESULT       <> '.'
+  )
+ORDER BY ts.accession;
