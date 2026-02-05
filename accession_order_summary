@@ -31,7 +31,8 @@ WITH
             INNER JOIN V_P_LAB_SPECIMEN Spec
                 ON Spec.AA_ID = Tube.SPECIMEN_AA_ID
         WHERE
-            Spec.COLLECTION_DT          IS NOT NULL
+            Spec.COLLECTION_DT >= TO_DATE(:start_date, 'YYYYMMDD')
+            AND Spec.COLLECTION_DT < TO_DATE(:end_date, 'YYYYMMDD') + 1
             AND NVL(Spec.IS_CANCELLED, 'N') = 'N'
         GROUP BY Tube.ORDER_AA_ID
     ),
@@ -43,6 +44,8 @@ WITH
         FROM V_P_LAB_ORDERED_TEST ot
         WHERE
             ot.CANCELLED_FLAG = 0
+            AND ot.ORDERING_DT >= TO_DATE(:start_date, 'YYYYMMDD')
+            AND ot.ORDERING_DT < TO_DATE(:end_date, 'YYYYMMDD') + 1
         GROUP BY ot.ORDER_AA_ID
     )
 SELECT
