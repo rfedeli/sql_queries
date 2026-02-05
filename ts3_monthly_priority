@@ -1,64 +1,88 @@
 -- Optimized TS3 monthly priority report
--- Improvements: removed unused JOINs, simplified CONCAT to ||, removed redundant aggregations
+-- Improvements: CTE for early filtering, removed redundant joins/columns,
+-- simplified GROUP BY, fixed SITE filtering, added proper aliases
+WITH date_params AS (
+  SELECT
+    TRUNC(LAST_DAY(ADD_MONTHS(SYSDATE, -:Month_1))) + (23.99 / 24) AS start_dt,
+    TRUNC(LAST_DAY(ADD_MONTHS(SYSDATE, -:Month_2))) + (23.99 / 24) AS end_dt
+  FROM DUAL
+),
+site_list AS (
+  -- Split comma-separated SITE1 parameter into rows for efficient joining
+  SELECT TRIM(REGEXP_SUBSTR(:SITE1, '[^,]+', 1, LEVEL)) AS site_code
+  FROM DUAL
+  CONNECT BY REGEXP_SUBSTR(:SITE1, '[^,]+', 1, LEVEL) IS NOT NULL
+),
+ts3_results AS (
+  -- Filter BB results early for TS3 tests only
+  SELECT
+    bbr.ORDERNO,
+    bbr.REVIEWDT,
+    bbr.RESULTEDDT
+  FROM V_P_BB_Result bbr
+    INNER JOIN V_P_BB_Test bbt ON bbt.AA_ID = bbr.TEST_RESULT
+  WHERE bbt.CODE = 'TS3'
+),
+filtered_test_results AS (
+  -- Filter test results early by date and state
+  SELECT
+    tr.ORDER_AA_ID,
+    tr.GROUP_TEST_ID,
+    tr.ORDERING_WORKSTATION_ID,
+    tr.PRIORITY,
+    tr.TEST_PERFORMING_LOCATION,
+    tr.COLLECT_DT,
+    tr.RECEIVE_DT,
+    tr.VERIFIED_DT
+  FROM V_P_LAB_TEST_RESULT tr
+    CROSS JOIN date_params dp
+  WHERE tr.STATE = 'Final'
+    AND tr.COLLECT_DT BETWEEN dp.start_dt AND dp.end_dt
+    AND tr.TEST_ID != 'RCL'
+)
 SELECT
   pt.LAST_NAME || ',' || pt.FIRST_NAME AS PTNAME,
   pt.ID AS MRN,
   o.ID AS ORDNUM,
   o.ORDERED_DT,
   tr.PRIORITY,
-  MAX(CASE WHEN tr.PRIORITY = 'S' THEN 1 ELSE 0 END) AS COUNT_STAT,
-  MAX(CASE WHEN tr.PRIORITY = 'R' THEN 1 ELSE 0 END) AS COUNT_ROUTINE,
-  MAX(CASE WHEN tr.PRIORITY = 'T' THEN 1 ELSE 0 END) AS COUNT_TIMED,
-  V_S_LAB_DOCTOR.FIRST_NAME || ' ' || V_S_LAB_DOCTOR.LAST_NAME AS DOCTOR_NAME,
+  doc.FIRST_NAME || ' ' || doc.LAST_NAME AS DOCTOR_NAME,
   MAX(tr.TEST_PERFORMING_LOCATION) AS PERF_LOC,
   MIN(tr.COLLECT_DT) AS COLLECT_DT,
-  MAX(V_P_BB_Result.REVIEWDT) AS REVIEWDT,
+  MAX(ts3.REVIEWDT) AS REVIEWDT,
   MIN(tr.RECEIVE_DT) AS RECEIVE_DT,
   MAX(tr.VERIFIED_DT) AS VERIFIED_DT,
-  MAX(V_P_BB_Result.RESULTEDDT) AS RESULTEDDT,
+  MAX(ts3.RESULTEDDT) AS RESULTEDDT,
   'TS3' AS TESTS,
   'Final' AS STATE,
   1 AS TS3,
   ROUND((MIN(tr.COLLECT_DT) - o.ORDERED_DT) * 1440, 2) AS ORD_TO_COLL,
   ROUND((MIN(tr.RECEIVE_DT) - MIN(tr.COLLECT_DT)) * 1440, 2) AS COLL_TO_RECEIVED,
-  ROUND((MAX(V_P_BB_Result.RESULTEDDT) - MIN(tr.RECEIVE_DT)) * 1440, 2) AS RECEIVED_TO_VERIFIED,
-  TO_CHAR(TRUNC(LAST_DAY(ADD_MONTHS(SYSDATE, -:Month_1))) + (23.99 / 24), 'MM/DD/YYYY') AS SDATE,
-  TO_CHAR(TRUNC(LAST_DAY(ADD_MONTHS(SYSDATE, -:Month_2))) + (23.99 / 24), 'MM/DD/YYYY') AS EDATE
+  ROUND((MAX(ts3.RESULTEDDT) - MIN(tr.RECEIVE_DT)) * 1440, 2) AS RECEIVED_TO_VERIFIED,
+  TO_CHAR(dp.start_dt, 'MM/DD/YYYY') AS SDATE,
+  TO_CHAR(dp.end_dt, 'MM/DD/YYYY') AS EDATE
 FROM V_P_LAB_PATIENT pt
-  INNER JOIN V_P_LAB_STAY st
-    ON st.PATIENT_AA_ID = pt.AA_ID
-  INNER JOIN V_P_LAB_ORDER o
-    ON o.STAY_AA_ID = st.AA_ID
-  INNER JOIN V_P_LAB_ORDERED_TEST otst
-    ON otst.ORDER_AA_ID = o.AA_ID
-  INNER JOIN V_P_LAB_TEST_RESULT tr
+  INNER JOIN V_P_LAB_STAY st ON st.PATIENT_AA_ID = pt.AA_ID
+  INNER JOIN V_P_LAB_ORDER o ON o.STAY_AA_ID = st.AA_ID
+  INNER JOIN V_P_LAB_ORDERED_TEST otst ON otst.ORDER_AA_ID = o.AA_ID
+  INNER JOIN filtered_test_results tr
     ON tr.ORDER_AA_ID = o.AA_ID
-    AND otst.TEST_ID = tr.GROUP_TEST_ID
-    AND otst.WORKSTATION_ID = tr.ORDERING_WORKSTATION_ID
-  INNER JOIN V_P_BB_Result
-    ON V_P_BB_Result.ORDERNO = otst.ORDER_NO
-  INNER JOIN V_P_BB_Test bbtest
-    ON bbtest.AA_ID = V_P_BB_Result.TEST_RESULT
-  INNER JOIN V_P_BB_BB_Order bbord
-    ON bbord.ORDERNO = V_P_BB_Result.ORDERNO
-    AND bbtest.ORDERNO = bbord.ORDERNO
-  INNER JOIN V_S_LAB_DOCTOR
-    ON o.REQUESTING_DOCTOR_ID = V_S_LAB_DOCTOR.ID
-WHERE
-  tr.STATE = 'Final'
-  AND tr.COLLECT_DT BETWEEN TRUNC(LAST_DAY(ADD_MONTHS(SYSDATE, -:Month_1))) + (23.99 / 24)
-    AND TRUNC(LAST_DAY(ADD_MONTHS(SYSDATE, -:Month_2))) + (23.99 / 24)
-  AND bbtest.CODE = 'TS3'
-  AND tr.TEST_ID NOT IN ('RCL')
-  AND (
-    INSTR(',' || UPPER(:SITE1) || ',', ',' || bbord.DEPOT || ',') > 0
-    OR bbord.DEPOT LIKE :SITE1
-  )
+    AND tr.GROUP_TEST_ID = otst.TEST_ID
+    AND tr.ORDERING_WORKSTATION_ID = otst.WORKSTATION_ID
+  INNER JOIN ts3_results ts3 ON ts3.ORDERNO = otst.ORDER_NO
+  INNER JOIN V_P_BB_BB_Order bbord ON bbord.ORDERNO = otst.ORDER_NO
+  INNER JOIN site_list sl ON sl.site_code = bbord.DEPOT
+  INNER JOIN V_S_LAB_DOCTOR doc ON doc.ID = o.REQUESTING_DOCTOR_ID
+  CROSS JOIN date_params dp
 GROUP BY
-  pt.LAST_NAME || ',' || pt.FIRST_NAME,
+  pt.LAST_NAME,
+  pt.FIRST_NAME,
   pt.ID,
   o.ID,
   o.ORDERED_DT,
   tr.PRIORITY,
-  V_S_LAB_DOCTOR.FIRST_NAME || ' ' || V_S_LAB_DOCTOR.LAST_NAME
-ORDER BY ORDNUM;
+  doc.FIRST_NAME,
+  doc.LAST_NAME,
+  dp.start_dt,
+  dp.end_dt
+ORDER BY o.ID;
