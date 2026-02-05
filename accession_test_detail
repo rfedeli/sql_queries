@@ -1,0 +1,64 @@
+-- Accession test detail: investigate individual order test counts
+-- Use this to validate the aggregation logic in accession_order_summary
+-- Parameters:
+--   :accession  Order ID to investigate (e.g. '12345678')
+
+-- 1. Order info
+SELECT
+    o.ID AS accession,
+    o.AA_ID AS order_aa_id,
+    o.ORDERED_DT
+FROM V_P_LAB_ORDER o
+WHERE o.ID = :accession;
+
+-- 2. All test results for this order (raw data)
+SELECT
+    tr.TEST_ID,
+    tr.GROUP_TEST_ID,
+    CASE WHEN tr.TEST_ID = tr.GROUP_TEST_ID THEN 'PARENT' ELSE 'COMPONENT' END AS test_type,
+    tr.STATE,
+    tr.RESULT,
+    tr.VERIFIED_DT
+FROM V_P_LAB_TEST_RESULT tr
+    INNER JOIN V_P_LAB_ORDER o ON o.AA_ID = tr.ORDER_AA_ID
+WHERE o.ID = :accession
+ORDER BY tr.GROUP_TEST_ID, tr.TEST_ID;
+
+-- 3. Count using DISTINCT GROUP_TEST_ID (current logic)
+SELECT
+    COUNT(DISTINCT tr.GROUP_TEST_ID) AS tests_by_distinct_group
+FROM V_P_LAB_TEST_RESULT tr
+    INNER JOIN V_P_LAB_ORDER o ON o.AA_ID = tr.ORDER_AA_ID
+WHERE o.ID = :accession
+    AND tr.STATE IN ('Final', 'Corrected')
+    AND tr.RESULT <> '.';
+
+-- 4. Count where TEST_ID = GROUP_TEST_ID only
+SELECT
+    COUNT(*) AS tests_by_parent_only
+FROM V_P_LAB_TEST_RESULT tr
+    INNER JOIN V_P_LAB_ORDER o ON o.AA_ID = tr.ORDER_AA_ID
+WHERE o.ID = :accession
+    AND tr.STATE IN ('Final', 'Corrected')
+    AND tr.RESULT <> '.'
+    AND tr.TEST_ID = tr.GROUP_TEST_ID;
+
+-- 5. Count from V_P_LAB_ORDERED_TEST (original approach)
+SELECT
+    COUNT(*) AS tests_from_ordered_test
+FROM V_P_LAB_ORDERED_TEST ot
+    INNER JOIN V_P_LAB_ORDER o ON o.AA_ID = ot.ORDER_AA_ID
+WHERE o.ID = :accession
+    AND ot.CANCELLED_FLAG = 0;
+
+-- 6. List distinct GROUP_TEST_IDs for this order
+SELECT DISTINCT
+    tr.GROUP_TEST_ID,
+    COUNT(*) AS component_count
+FROM V_P_LAB_TEST_RESULT tr
+    INNER JOIN V_P_LAB_ORDER o ON o.AA_ID = tr.ORDER_AA_ID
+WHERE o.ID = :accession
+    AND tr.STATE IN ('Final', 'Corrected')
+    AND tr.RESULT <> '.'
+GROUP BY tr.GROUP_TEST_ID
+ORDER BY tr.GROUP_TEST_ID;

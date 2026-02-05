@@ -1,0 +1,16 @@
+-- Test counts by GROUP_TEST_ID for data validation
+-- Shows total count per test type to compare against application
+-- Parameters:
+--   :start_date  YYYYMMDD  inclusive
+--   :end_date    YYYYMMDD  inclusive
+SELECT
+    tr.GROUP_TEST_ID,
+    COUNT(DISTINCT tr.ORDER_AA_ID || '-' || tr.GROUP_TEST_ID) AS TEST_COUNT
+FROM V_P_LAB_TEST_RESULT tr
+WHERE
+    tr.STATE IN ('Final', 'Corrected')
+    AND tr.RESULT <> '.'
+    AND tr.VERIFIED_DT >= TO_DATE(:start_date, 'YYYYMMDD')
+    AND tr.VERIFIED_DT < TO_DATE(:end_date, 'YYYYMMDD') + 1
+GROUP BY tr.GROUP_TEST_ID
+ORDER BY TEST_COUNT DESC;

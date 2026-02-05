@@ -1,12 +1,13 @@
 -- Accession summary: order count, specimens collected, tests ordered
+-- SoftLab only (excludes Blood Bank and Microbiology)
 -- Filters: excludes all cancelled records; requires >=1 verified result per order;
---          excludes orders where every verified result is '.' (not a true order)
+--          excludes orders where every result is '.' (cancelled tests)
 -- Parameters:
 --   :start_date  YYYYMMDD  inclusive  (e.g. 20250101 for annual, 20250101 for monthly)
---   :end_date    YYYYMMDD  inclusive  (e.g. 20251231 for annual, 20250131 for monthly)
+--   :end_date    YYYYMMDD  inclusive  (e.g. 20260101 for annual, 20250201 for monthly)
 WITH
     verified_orders AS (
-        -- Qualifying orders: >=1 verified result, at least one result is not '.'
+        -- Qualifying orders: >=1 Final/Corrected result, at least one not '.'
         SELECT
             o.AA_ID AS order_aa_id,
             o.ID    AS accession
@@ -14,44 +15,52 @@ WITH
             INNER JOIN V_P_LAB_TEST_RESULT tr
                 ON tr.ORDER_AA_ID = o.AA_ID
         WHERE
-            o.ORDERED_DT >= TO_DATE(:start_date, 'YYYYMMDD')
-            AND o.ORDERED_DT <  TO_DATE(:end_date, 'YYYYMMDD') + 1
+            tr.VERIFIED_DT >= TO_DATE(:start_date, 'YYYYMMDD')
+            AND tr.VERIFIED_DT < TO_DATE(:end_date, 'YYYYMMDD') + 1
             AND tr.STATE IN ('Final', 'Corrected')
         GROUP BY o.AA_ID, o.ID
         HAVING
-            COUNT(*)                                               >= 1
-            AND SUM(CASE WHEN tr.RESULT <> '.' THEN 1 ELSE 0 END) > 0
+            SUM(CASE WHEN tr.RESULT <> '.' THEN 1 ELSE 0 END) > 0
     ),
     specimens AS (
-        -- Collected, non-cancelled specimens per order (routed through tube linkage)
+        -- Specimens per order: received, labelled, or has barcode
         SELECT
             Tube.ORDER_AA_ID,
             COUNT(DISTINCT Spec.AA_ID) AS specimens_collected
         FROM V_P_LAB_TUBE Tube
             INNER JOIN V_P_LAB_SPECIMEN Spec
                 ON Spec.AA_ID = Tube.SPECIMEN_AA_ID
+            LEFT JOIN V_P_LAB_SPECIMEN_BARCODE bc
+                ON bc.TUBE_AA_ID = Tube.AA_ID
         WHERE
-            Spec.COLLECTION_DT >= TO_DATE(:start_date, 'YYYYMMDD')
-            AND Spec.COLLECTION_DT < TO_DATE(:end_date, 'YYYYMMDD') + 1
-            AND NVL(Spec.IS_CANCELLED, 'N') = 'N'
+            NVL(Spec.IS_CANCELLED, 'N') = 'N'
+            AND (
+                Tube.RECEIPT_DT IS NOT NULL
+                OR Tube.IS_LABELLED = 1
+                OR bc.AA_ID IS NOT NULL
+            )
+            AND COALESCE(Tube.RECEIPT_DT, Spec.COLLECTION_DT) >= TO_DATE(:start_date, 'YYYYMMDD')
+            AND COALESCE(Tube.RECEIPT_DT, Spec.COLLECTION_DT) < TO_DATE(:end_date, 'YYYYMMDD') + 1
         GROUP BY Tube.ORDER_AA_ID
     ),
     tests AS (
-        -- Non-cancelled ordered tests per order
+        -- Verified test results per order at GROUP_TEST_ID level (panels count as 1)
+        -- Counts distinct GROUP_TEST_ID per order (components roll up to their panel)
         SELECT
-            ot.ORDER_AA_ID,
-            COUNT(*) AS tests_ordered
-        FROM V_P_LAB_ORDERED_TEST ot
+            tr.ORDER_AA_ID,
+            COUNT(DISTINCT tr.GROUP_TEST_ID) AS tests_ordered
+        FROM V_P_LAB_TEST_RESULT tr
         WHERE
-            ot.CANCELLED_FLAG = 0
-            AND ot.ORDERING_DT >= TO_DATE(:start_date, 'YYYYMMDD')
-            AND ot.ORDERING_DT < TO_DATE(:end_date, 'YYYYMMDD') + 1
-        GROUP BY ot.ORDER_AA_ID
+            tr.STATE IN ('Final', 'Corrected')
+            AND tr.RESULT <> '.'
+            AND tr.VERIFIED_DT >= TO_DATE(:start_date, 'YYYYMMDD')
+            AND tr.VERIFIED_DT < TO_DATE(:end_date, 'YYYYMMDD') + 1
+        GROUP BY tr.ORDER_AA_ID
     )
 SELECT
-    COUNT(*)                                            AS TOTAL_ORDERS,
-    SUM(COALESCE(sp.specimens_collected, 0))            AS SPECIMENS_COLLECTED,
-    SUM(COALESCE(ts.tests_ordered, 0))                  AS TESTS_ORDERED
+    COUNT(*)                                       AS ORDERS,
+    SUM(COALESCE(sp.specimens_collected, 0))       AS SPECIMENS_COLLECTED,
+    SUM(COALESCE(ts.tests_ordered, 0))             AS TESTS_ORDERED
 FROM verified_orders vo
     LEFT JOIN specimens sp
         ON sp.ORDER_AA_ID = vo.order_aa_id
