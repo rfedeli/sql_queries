@@ -4,7 +4,7 @@
 --          excludes orders where every result is '.' (cancelled tests)
 -- Parameters:
 --   :start_date  YYYYMMDD  inclusive  (e.g. 20250101 for annual, 20250101 for monthly)
---   :end_date    YYYYMMDD  inclusive  (e.g. 20260101 for annual, 20250201 for monthly)
+--   :end_date    YYYYMMDD  inclusive  (e.g. 20251231 for annual, 20250131 for monthly)
 WITH
     verified_orders AS (
         -- Qualifying orders: >=1 Final/Corrected result, at least one not '.'
