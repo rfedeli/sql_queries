@@ -47,7 +47,7 @@ ORDER BY cci.CCCPT1, cci.CCCPT2;
 ----------------------------------------------------------------------
 -- 2. Billing Items Already Flagged by CCI Edits
 --    Items where the system recorded a CCI hit (ITCCITINTN populated).
---    Uses bind variables :START_DT and :END_DT for the service date range.
+--    Uses bind variables :START_DT and :END_DT (YYYYMMDD) for the service date range.
 ----------------------------------------------------------------------
 SELECT
   it.ITINTN         AS ITEM_ID,
@@ -75,7 +75,7 @@ FROM V_P_ARE_ITEM it
     ON mod0.MODCODE = it.ITCPTMOD0
 WHERE it.ITCCITINTN IS NOT NULL
   AND it.ITCCITINTN <> 0
-  AND it.ITSRVDT BETWEEN :START_DT AND :END_DT
+  AND it.ITSRVDT BETWEEN TO_DATE(''||:START_DT, 'YYYYMMDD') AND TO_DATE(''||:END_DT, 'YYYYMMDD')
 ORDER BY it.ITVTINTN, it.ITSRVDT, it.ITCPTCD;
 
 ----------------------------------------------------------------------
@@ -83,7 +83,7 @@ ORDER BY it.ITVTINTN, it.ITSRVDT, it.ITCPTCD;
 --    Self-join billed items on the same visit + service date to find
 --    CPT pairs that match active CCI edit rules, regardless of whether
 --    the system already flagged them.
---    Uses bind variables :START_DT and :END_DT for the service date range.
+--    Uses bind variables :START_DT and :END_DT (YYYYMMDD) for the service date range.
 ----------------------------------------------------------------------
 SELECT
   it1.ITVTINTN      AS VISIT_ID,
@@ -125,7 +125,7 @@ FROM V_P_ARE_ITEM it1
     ON m1.MODCODE = it1.ITCPTMOD0
   LEFT JOIN V_S_ARE_MODIFIER m2
     ON m2.MODCODE = it2.ITCPTMOD0
-WHERE it1.ITSRVDT BETWEEN :START_DT AND :END_DT
+WHERE it1.ITSRVDT BETWEEN TO_DATE(''||:START_DT, 'YYYYMMDD') AND TO_DATE(''||:END_DT, 'YYYYMMDD')
   AND it1.ITSTAT = 0
   AND it2.ITSTAT = 0
 ORDER BY it1.ITVTINTN, it1.ITSRVDT, it1.ITCPTCD;
@@ -134,7 +134,7 @@ ORDER BY it1.ITVTINTN, it1.ITSRVDT, it1.ITCPTCD;
 -- 4. CCI Summary by CPT Pair
 --    Aggregated count of CCI conflicts per CPT pair within the date range.
 --    Useful for identifying the most frequent edit hits.
---    Uses bind variables :START_DT and :END_DT for the service date range.
+--    Uses bind variables :START_DT and :END_DT (YYYYMMDD) for the service date range.
 ----------------------------------------------------------------------
 SELECT
   cci.CCCPT1        AS CPT_COLUMN1,
@@ -150,8 +150,8 @@ FROM V_P_ARE_ITEM it1
     AND TRUNC(it2.ITSRVDT) = TRUNC(it1.ITSRVDT)
     AND it2.ITINTN > it1.ITINTN
   INNER JOIN V_S_ARE_CCI cci
-    ON cci.CCCPT1 = it1.ITCPTCD
-    AND cci.CCCPT2 = it2.ITCPTCD
+    ON (   (cci.CCCPT1 = it1.ITCPTCD AND cci.CCCPT2 = it2.ITCPTCD)
+        OR (cci.CCCPT1 = it2.ITCPTCD AND cci.CCCPT2 = it1.ITCPTCD))
     AND cci.CCSTAT = 0
     AND cci.CCEFFDT <= it1.ITSRVDT
     AND (cci.CCEXPDT IS NULL OR cci.CCEXPDT >= it1.ITSRVDT)
@@ -159,7 +159,7 @@ FROM V_P_ARE_ITEM it1
     ON cpt1.CPTCODE = cci.CCCPT1
   LEFT JOIN V_S_ARE_CPTTABLE cpt2
     ON cpt2.CPTCODE = cci.CCCPT2
-WHERE it1.ITSRVDT BETWEEN :START_DT AND :END_DT
+WHERE it1.ITSRVDT BETWEEN TO_DATE(''||:START_DT, 'YYYYMMDD') AND TO_DATE(''||:END_DT, 'YYYYMMDD')
   AND it1.ITSTAT = 0
   AND it2.ITSTAT = 0
 GROUP BY
@@ -172,7 +172,7 @@ ORDER BY HIT_COUNT DESC;
 -- 5a. Modifier Applied but NOT Allowed (Billing Errors)
 --     Items flagged by CCI where CCFLAG=0 (modifier override not allowed)
 --     but a CCI-type modifier (MODTYPE=3) was applied anyway.
---     Uses bind variables :START_DT and :END_DT for the service date range.
+--     Uses bind variables :START_DT and :END_DT (YYYYMMDD) for the service date range.
 ----------------------------------------------------------------------
 SELECT
   it.ITINTN         AS ITEM_ID,
@@ -197,7 +197,7 @@ FROM V_P_ARE_ITEM it
 WHERE it.ITCCITINTN IS NOT NULL
   AND it.ITCCITINTN <> 0
   AND cci.CCFLAG = 0
-  AND it.ITSRVDT BETWEEN :START_DT AND :END_DT
+  AND it.ITSRVDT BETWEEN TO_DATE(''||:START_DT, 'YYYYMMDD') AND TO_DATE(''||:END_DT, 'YYYYMMDD')
 ORDER BY it.ITSRVDT, it.ITVTINTN;
 
 ----------------------------------------------------------------------
@@ -205,7 +205,7 @@ ORDER BY it.ITSRVDT, it.ITVTINTN;
 --     Items flagged by CCI where CCFLAG=1 (modifier override allowed)
 --     but no CCI-type modifier (MODTYPE=3) was applied.
 --     These may be recoverable if the services were truly distinct.
---     Uses bind variables :START_DT and :END_DT for the service date range.
+--     Uses bind variables :START_DT and :END_DT (YYYYMMDD) for the service date range.
 ----------------------------------------------------------------------
 SELECT
   it.ITINTN         AS ITEM_ID,
@@ -234,5 +234,5 @@ WHERE it.ITCCITINTN IS NOT NULL
     WHERE m.MODCODE IN (it.ITCPTMOD0, it.ITCPTMOD1, it.ITCPTMOD2, it.ITCPTMOD3)
       AND m.MODTYPE = 3
   )
-  AND it.ITSRVDT BETWEEN :START_DT AND :END_DT
+  AND it.ITSRVDT BETWEEN TO_DATE(''||:START_DT, 'YYYYMMDD') AND TO_DATE(''||:END_DT, 'YYYYMMDD')
 ORDER BY it.ITSRVDT, it.ITVTINTN;
