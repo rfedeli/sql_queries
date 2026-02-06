@@ -16,7 +16,12 @@
       "Bash(git -C \"c:\\\\Users\\\\Rick\\\\sql_queries\" log --oneline origin/master..HEAD)",
       "Bash(git -C \"c:\\\\Users\\\\Rick\\\\sql_queries\" log --oneline HEAD..origin/master)",
       "Bash(git -C \"c:\\\\Users\\\\Rick\\\\sql_queries\" diff)",
-      "Bash(git -C \"c:\\\\Users\\\\Rick\\\\sql_queries\" log --oneline -5)"
+      "Bash(git -C \"c:\\\\Users\\\\Rick\\\\sql_queries\" log --oneline -5)",
+      "Bash(git -C \"c:\\\\Users\\\\Rick\\\\sql_queries\" push origin master)",
+      "Bash(git -C \"c:/Users/Rick/sql_queries\" status)",
+      "Bash(git -C \"c:/Users/Rick/sql_queries\" diff)",
+      "Bash(git -C \"c:/Users/Rick/sql_queries\" log --oneline -5)",
+      "Bash(git -C \"c:/Users/Rick/sql_queries\" add cci_edits claude.md .claude/settings.local.json)"
     ]
   }
 }

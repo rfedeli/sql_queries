@@ -1,0 +1,238 @@
+-- CCI (Correct Coding Initiative) Edits — Active Rules & Violation Audit
+-- Source views: V_S_ARE_CCI, V_S_ARE_CPTTABLE, V_P_ARE_ITEM, V_P_ARE_VISIT
+
+----------------------------------------------------------------------
+-- 1. Active CCI Edit Pairs
+--    Shows all currently effective CCI rules with CPT descriptions.
+----------------------------------------------------------------------
+SELECT
+  cci.CCINTN        AS CCI_ID,
+  cci.CCPYOCODE     AS PAYOR_CODE,
+  cci.CCCPT1        AS CPT_COLUMN1,
+  cpt1.CPTDESC      AS CPT1_DESCRIPTION,
+  CASE
+    WHEN cpt1.CPTCODE IS NULL THEN 'NOT FOUND'
+    WHEN cpt1.CPTSTAT <> 0 THEN 'INACTIVE'
+    WHEN cpt1.CPTEXPDT IS NOT NULL AND cpt1.CPTEXPDT < SYSDATE THEN 'EXPIRED'
+    ELSE 'ACTIVE'
+  END               AS CPT1_STATUS,
+  cci.CCCPT2        AS CPT_COLUMN2,
+  cpt2.CPTDESC      AS CPT2_DESCRIPTION,
+  CASE
+    WHEN cpt2.CPTCODE IS NULL THEN 'NOT FOUND'
+    WHEN cpt2.CPTSTAT <> 0 THEN 'INACTIVE'
+    WHEN cpt2.CPTEXPDT IS NOT NULL AND cpt2.CPTEXPDT < SYSDATE THEN 'EXPIRED'
+    ELSE 'ACTIVE'
+  END               AS CPT2_STATUS,
+  cci.CCERRCODE     AS ERROR_CODE,
+  cci.CCFLAG        AS MODIFIER_INDICATOR,
+  CASE cci.CCFLAG
+    WHEN 0 THEN 'Not allowed'
+    WHEN 1 THEN 'Allowed'
+    WHEN 9 THEN 'N/A'
+    ELSE 'Unknown (' || cci.CCFLAG || ')'
+  END               AS MODIFIER_OVERRIDE,
+  cci.CCEFFDT       AS EFFECTIVE_DT,
+  cci.CCEXPDT       AS EXPIRATION_DT
+FROM V_S_ARE_CCI cci
+  LEFT JOIN V_S_ARE_CPTTABLE cpt1
+    ON cpt1.CPTCODE = cci.CCCPT1
+  LEFT JOIN V_S_ARE_CPTTABLE cpt2
+    ON cpt2.CPTCODE = cci.CCCPT2
+WHERE cci.CCSTAT = 0
+  AND cci.CCEFFDT <= SYSDATE
+  AND (cci.CCEXPDT IS NULL OR cci.CCEXPDT >= SYSDATE)
+ORDER BY cci.CCCPT1, cci.CCCPT2;
+
+----------------------------------------------------------------------
+-- 2. Billing Items Already Flagged by CCI Edits
+--    Items where the system recorded a CCI hit (ITCCITINTN populated).
+--    Uses bind variables :START_DT and :END_DT for the service date range.
+----------------------------------------------------------------------
+SELECT
+  it.ITINTN         AS ITEM_ID,
+  it.ITVTINTN       AS VISIT_ID,
+  it.ITSRVDT        AS SERVICE_DT,
+  it.ITTSTCODE      AS TEST_CODE,
+  it.ITDESC         AS ITEM_DESC,
+  it.ITCPTCD        AS CPT_CODE,
+  it.ITCPTMOD0      AS MODIFIER_0,
+  mod0.MODDESC      AS MOD0_DESC,
+  it.ITCPTMOD1      AS MODIFIER_1,
+  it.ITCPTMOD2      AS MODIFIER_2,
+  it.ITCPTMOD3      AS MODIFIER_3,
+  cci.CCCPT1        AS CCI_CPT_COL1,
+  cci.CCCPT2        AS CCI_CPT_COL2,
+  cci.CCERRCODE     AS CCI_ERROR_CODE,
+  cci.CCFLAG        AS CCI_MOD_INDICATOR,
+  cci.CCPYOCODE     AS CCI_PAYOR,
+  it.ITSTAT         AS ITEM_STATUS,
+  it.ITFCLTY        AS FACILITY
+FROM V_P_ARE_ITEM it
+  INNER JOIN V_S_ARE_CCI cci
+    ON cci.CCINTN = it.ITCCITINTN
+  LEFT JOIN V_S_ARE_MODIFIER mod0
+    ON mod0.MODCODE = it.ITCPTMOD0
+WHERE it.ITCCITINTN IS NOT NULL
+  AND it.ITCCITINTN <> 0
+  AND it.ITSRVDT BETWEEN :START_DT AND :END_DT
+ORDER BY it.ITVTINTN, it.ITSRVDT, it.ITCPTCD;
+
+----------------------------------------------------------------------
+-- 3. Prospective CCI Conflict Detection
+--    Self-join billed items on the same visit + service date to find
+--    CPT pairs that match active CCI edit rules, regardless of whether
+--    the system already flagged them.
+--    Uses bind variables :START_DT and :END_DT for the service date range.
+----------------------------------------------------------------------
+SELECT
+  it1.ITVTINTN      AS VISIT_ID,
+  it1.ITSRVDT       AS SERVICE_DT,
+  it1.ITINTN        AS ITEM1_ID,
+  it1.ITTSTCODE     AS ITEM1_TEST,
+  it1.ITCPTCD       AS ITEM1_CPT,
+  it1.ITCPTMOD0     AS ITEM1_MOD,
+  m1.MODDESC        AS ITEM1_MOD_DESC,
+  it1.ITDESC        AS ITEM1_DESC,
+  it2.ITINTN        AS ITEM2_ID,
+  it2.ITTSTCODE     AS ITEM2_TEST,
+  it2.ITCPTCD       AS ITEM2_CPT,
+  it2.ITCPTMOD0     AS ITEM2_MOD,
+  m2.MODDESC        AS ITEM2_MOD_DESC,
+  it2.ITDESC        AS ITEM2_DESC,
+  cci.CCERRCODE     AS CCI_ERROR_CODE,
+  cci.CCFLAG        AS CCI_MOD_INDICATOR,
+  CASE cci.CCFLAG
+    WHEN 0 THEN 'Not allowed'
+    WHEN 1 THEN 'Allowed'
+    WHEN 9 THEN 'N/A'
+    ELSE 'Unknown (' || cci.CCFLAG || ')'
+  END               AS CCI_MOD_OVERRIDE,
+  cci.CCPYOCODE     AS CCI_PAYOR,
+  it1.ITFCLTY       AS FACILITY
+FROM V_P_ARE_ITEM it1
+  INNER JOIN V_P_ARE_ITEM it2
+    ON it2.ITVTINTN = it1.ITVTINTN
+    AND TRUNC(it2.ITSRVDT) = TRUNC(it1.ITSRVDT)
+    AND it2.ITINTN > it1.ITINTN
+  INNER JOIN V_S_ARE_CCI cci
+    ON cci.CCCPT1 = it1.ITCPTCD
+    AND cci.CCCPT2 = it2.ITCPTCD
+    AND cci.CCSTAT = 0
+    AND cci.CCEFFDT <= it1.ITSRVDT
+    AND (cci.CCEXPDT IS NULL OR cci.CCEXPDT >= it1.ITSRVDT)
+  LEFT JOIN V_S_ARE_MODIFIER m1
+    ON m1.MODCODE = it1.ITCPTMOD0
+  LEFT JOIN V_S_ARE_MODIFIER m2
+    ON m2.MODCODE = it2.ITCPTMOD0
+WHERE it1.ITSRVDT BETWEEN :START_DT AND :END_DT
+  AND it1.ITSTAT = 0
+  AND it2.ITSTAT = 0
+ORDER BY it1.ITVTINTN, it1.ITSRVDT, it1.ITCPTCD;
+
+----------------------------------------------------------------------
+-- 4. CCI Summary by CPT Pair
+--    Aggregated count of CCI conflicts per CPT pair within the date range.
+--    Useful for identifying the most frequent edit hits.
+--    Uses bind variables :START_DT and :END_DT for the service date range.
+----------------------------------------------------------------------
+SELECT
+  cci.CCCPT1        AS CPT_COLUMN1,
+  cpt1.CPTDESC      AS CPT1_DESCRIPTION,
+  cci.CCCPT2        AS CPT_COLUMN2,
+  cpt2.CPTDESC      AS CPT2_DESCRIPTION,
+  cci.CCERRCODE     AS ERROR_CODE,
+  cci.CCPYOCODE     AS PAYOR_CODE,
+  COUNT(*)          AS HIT_COUNT
+FROM V_P_ARE_ITEM it1
+  INNER JOIN V_P_ARE_ITEM it2
+    ON it2.ITVTINTN = it1.ITVTINTN
+    AND TRUNC(it2.ITSRVDT) = TRUNC(it1.ITSRVDT)
+    AND it2.ITINTN > it1.ITINTN
+  INNER JOIN V_S_ARE_CCI cci
+    ON cci.CCCPT1 = it1.ITCPTCD
+    AND cci.CCCPT2 = it2.ITCPTCD
+    AND cci.CCSTAT = 0
+    AND cci.CCEFFDT <= it1.ITSRVDT
+    AND (cci.CCEXPDT IS NULL OR cci.CCEXPDT >= it1.ITSRVDT)
+  LEFT JOIN V_S_ARE_CPTTABLE cpt1
+    ON cpt1.CPTCODE = cci.CCCPT1
+  LEFT JOIN V_S_ARE_CPTTABLE cpt2
+    ON cpt2.CPTCODE = cci.CCCPT2
+WHERE it1.ITSRVDT BETWEEN :START_DT AND :END_DT
+  AND it1.ITSTAT = 0
+  AND it2.ITSTAT = 0
+GROUP BY
+  cci.CCCPT1, cpt1.CPTDESC,
+  cci.CCCPT2, cpt2.CPTDESC,
+  cci.CCERRCODE, cci.CCPYOCODE
+ORDER BY HIT_COUNT DESC;
+
+----------------------------------------------------------------------
+-- 5a. Modifier Applied but NOT Allowed (Billing Errors)
+--     Items flagged by CCI where CCFLAG=0 (modifier override not allowed)
+--     but a CCI-type modifier (MODTYPE=3) was applied anyway.
+--     Uses bind variables :START_DT and :END_DT for the service date range.
+----------------------------------------------------------------------
+SELECT
+  it.ITINTN         AS ITEM_ID,
+  it.ITVTINTN       AS VISIT_ID,
+  it.ITSRVDT        AS SERVICE_DT,
+  it.ITTSTCODE      AS TEST_CODE,
+  it.ITDESC         AS ITEM_DESC,
+  it.ITCPTCD        AS CPT_CODE,
+  it.ITCPTMOD0      AS MODIFIER_0,
+  mod0.MODDESC      AS MOD0_DESC,
+  cci.CCCPT1        AS CCI_CPT_COL1,
+  cci.CCCPT2        AS CCI_CPT_COL2,
+  cci.CCERRCODE     AS CCI_ERROR_CODE,
+  cci.CCPYOCODE     AS CCI_PAYOR,
+  it.ITFCLTY        AS FACILITY
+FROM V_P_ARE_ITEM it
+  INNER JOIN V_S_ARE_CCI cci
+    ON cci.CCINTN = it.ITCCITINTN
+  INNER JOIN V_S_ARE_MODIFIER mod0
+    ON mod0.MODCODE = it.ITCPTMOD0
+    AND mod0.MODTYPE = 3
+WHERE it.ITCCITINTN IS NOT NULL
+  AND it.ITCCITINTN <> 0
+  AND cci.CCFLAG = 0
+  AND it.ITSRVDT BETWEEN :START_DT AND :END_DT
+ORDER BY it.ITSRVDT, it.ITVTINTN;
+
+----------------------------------------------------------------------
+-- 5b. Modifier Allowed but NOT Applied (Missed Opportunities)
+--     Items flagged by CCI where CCFLAG=1 (modifier override allowed)
+--     but no CCI-type modifier (MODTYPE=3) was applied.
+--     These may be recoverable if the services were truly distinct.
+--     Uses bind variables :START_DT and :END_DT for the service date range.
+----------------------------------------------------------------------
+SELECT
+  it.ITINTN         AS ITEM_ID,
+  it.ITVTINTN       AS VISIT_ID,
+  it.ITSRVDT        AS SERVICE_DT,
+  it.ITTSTCODE      AS TEST_CODE,
+  it.ITDESC         AS ITEM_DESC,
+  it.ITCPTCD        AS CPT_CODE,
+  it.ITCPTMOD0      AS MODIFIER_0,
+  it.ITCPTMOD1      AS MODIFIER_1,
+  cci.CCCPT1        AS CCI_CPT_COL1,
+  cci.CCCPT2        AS CCI_CPT_COL2,
+  cci.CCERRCODE     AS CCI_ERROR_CODE,
+  cci.CCPYOCODE     AS CCI_PAYOR,
+  it.ITPRICE        AS PRICE,
+  it.ITFCLTY        AS FACILITY
+FROM V_P_ARE_ITEM it
+  INNER JOIN V_S_ARE_CCI cci
+    ON cci.CCINTN = it.ITCCITINTN
+WHERE it.ITCCITINTN IS NOT NULL
+  AND it.ITCCITINTN <> 0
+  AND cci.CCFLAG = 1
+  AND NOT EXISTS (
+    SELECT 1
+    FROM V_S_ARE_MODIFIER m
+    WHERE m.MODCODE IN (it.ITCPTMOD0, it.ITCPTMOD1, it.ITCPTMOD2, it.ITCPTMOD3)
+      AND m.MODTYPE = 3
+  )
+  AND it.ITSRVDT BETWEEN :START_DT AND :END_DT
+ORDER BY it.ITSRVDT, it.ITVTINTN;
