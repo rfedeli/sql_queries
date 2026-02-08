@@ -402,6 +402,10 @@ V_P_ARE_ITEM.ITCPTCD → V_S_ARE_CPTTABLE.CPTCODE
 V_P_ARE_ITEM.ITTSTCODE → V_S_ARE_TEST.TSTCODE
 V_S_ARE_CCI.CCCPT1 / CCCPT2 → V_S_ARE_CPTTABLE.CPTCODE
 V_S_ARE_CCI.CCPYOCODE → V_S_ARE_PAYOR (payor-specific CCI rules)
+V_S_ARE_BILLRULES.BRTSTCODE → V_S_ARE_TEST.TSTCODE
+V_S_ARE_BILLRULES.BRCPTCODE → V_S_ARE_CPTTABLE.CPTCODE
+V_S_ARE_BILLRULES.BRPYOCODE → V_S_ARE_PAYOR (payor-specific billing rules)
+V_S_ARE_BILLRULES.BRCCIMOD → V_S_ARE_MODIFIER.MODCODE (configured CCI override modifier)
 ```
 
 ### V_S_ARE_CCI — CCI (Correct Coding Initiative) edit pairs
@@ -486,6 +490,43 @@ V_S_ARE_CCI.CCPYOCODE → V_S_ARE_PAYOR (payor-specific CCI rules)
 | MODEDITBY | VARCHAR2 | Last edited by user |
 | MODINTERNAL | NUMBER | Internal flag |
 | MODTYPE | NUMBER | Modifier type: 0=general, 1=repeat test (91), 2=component (26/TC/CD/CE), 3=CCI override (59/76/77), 4=teaching (GC) |
+
+### V_S_ARE_BILLRULES — Billing rules (per test/payor/CPT)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| BRINTN | NUMBER | PK — internal number |
+| BRTSTCODE | VARCHAR2 15 | AR test code (FK → V_S_ARE_TEST.TSTCODE) |
+| BRSYSCODE | VARCHAR2 5 | System code |
+| BRPYOCODE | VARCHAR2 15 | Payor code (rules are payor-specific) |
+| BRBILCLASS | VARCHAR2 5 | Billing class |
+| BRPTTYPE | VARCHAR2 1 | Patient type |
+| BRNOBILL | NUMBER | No bill flag |
+| BRSPLIT | NUMBER | Split flag |
+| BRCPTCODE | VARCHAR2 11 | CPT/HCPCS code |
+| BRMODCODE0 | VARCHAR2 5 | Default modifier 0 |
+| BRMODCODE1 | VARCHAR2 5 | Default modifier 1 |
+| BRMODCODE2 | VARCHAR2 5 | Default modifier 2 |
+| BRMODCODE3 | VARCHAR2 5 | Default modifier 3 |
+| BRBEGDT | DATE | Begin/effective date |
+| BREXPDT | DATE | Expiration date |
+| BRREVDT | DATE | Review date |
+| BRSTAT | NUMBER | Status (0 = active) |
+| BRCREATDTM | DATE | Created date/time |
+| BREDITDTM | DATE | Last edited date/time |
+| BRCREATBY | VARCHAR2 16 | Created by user |
+| BREDITBY | VARCHAR2 16 | Last edited by user |
+| BRCHARGECODE | VARCHAR2 11 | Charge code |
+| BRONCANCELED | NUMBER | On-canceled flag |
+| BRREGION | VARCHAR2 1 | Region |
+| BRRESPAYOR | VARCHAR2 15 | Responsible payor |
+| BRREPMOD | VARCHAR2 5 | Repeat test modifier |
+| BRORDEREDAS | VARCHAR2 15 | Ordered-as code |
+| BRREPOPT | NUMBER | Repeat option |
+| BRWARD | VARCHAR2 15 | Ward |
+| BRFCLTY | VARCHAR2 15 | Facility |
+| BRDGNTYPE | VARCHAR2 5 | Diagnosis type |
+| BRCCIMOD | VARCHAR2 5 | CCI override modifier (applied when CCI edit allows modifier) |
 
 ### V_P_ARE_ITEM — Billing line item
 
