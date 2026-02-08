@@ -24,12 +24,18 @@
       "Bash(git -C \"c:/Users/Rick/sql_queries\" add cci_edits claude.md .claude/settings.local.json)",
       "Bash(git -C \"c:/Users/Rick/sql_queries\" commit -m \"$\\(cat <<''EOF''\nAdd CCI edits query and SoftAR data dictionary to CLAUDE.md\n\nNew cci_edits query file with 6 queries: active CCI edit pairs with CPT\nstatus, system-flagged billing items, prospective conflict detection via\nself-join, CPT pair summary, and two audit queries \\(5a: modifier applied\nbut not allowed, 5b: modifier allowed but not applied\\).\n\nUpdated CLAUDE.md with full SoftAR module documentation including naming\nconventions, entity relationships, column details for V_S_ARE_CCI,\nV_S_ARE_CPTTABLE, V_S_ARE_TEST, V_S_ARE_MODIFIER, V_P_ARE_ITEM, and\ncomplete view listings \\(~170 SoftAR views\\).\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
       "Bash(git -C \"c:/Users/Rick/sql_queries\" add cci_edits .claude/settings.local.json)",
+      "Bash(git -C \"c:/Users/Rick/sql_queries\" commit -m \"$\\(cat <<''EOF''\nFix date bind variables with explicit TO_DATE and YYYYMMDD format\n\nWrap all :START_DT/:END_DT bind variables in TO_DATE\\(''''||:bind, ''YYYYMMDD''\\)\nacross queries 2-5b to handle SQL tool type inference. The ''''|| prefix\nforces string coercion. Revert query 3 CCI join to unidirectional;\nkeep query 4 bidirectional for aggregate summary.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git -C \"c:/Users/Rick/sql_queries\" push)",
       "Bash(git remote add:*)",
       "Bash(git push:*)",
       "Bash(gh api:*)",
       "WebFetch(domain:api.github.com)",
       "Bash(git remote remove:*)",
-      "Bash(git rebase:*)"
+      "Bash(git rebase:*)",
+      "Bash(git fetch:*)",
+      "Bash(git pull:*)",
+      "Bash(git stash:*)",
+      "Bash(git stash pop:*)"
     ]
   }
 }
