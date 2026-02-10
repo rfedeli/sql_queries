@@ -232,6 +232,24 @@ V_P_BB_Result links to V_P_BB_Test via:
 | RECEIPT_LOC | VARCHAR2 11 | Receipt location |
 | DELIVERY_LOC | VARCHAR2 20 | Delivery location |
 
+### V_P_LAB_TUBEINFO — Specimen tube info (denormalized)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER | PK (NOT NULL) |
+| ORDER_ID | VARCHAR2 11 | Order number |
+| BARCODE | VARCHAR2 31 | Specimen barcode |
+| COLLECTION_DT | DATE | Collection date/time |
+| COLLECTION_PHLEB | VARCHAR2 16 | Collecting phlebotomist |
+| SPECIMEN_TYPE | VARCHAR2 12 | Specimen type |
+| TUBE_TYPE | VARCHAR2 8 | Tube type |
+| LAST_NAME | VARCHAR2 50 | Patient last name |
+| FIRST_NAME | VARCHAR2 80 | Patient first name |
+| MIDDLE_INITIAL | VARCHAR2 27 | Patient middle initial |
+| SEX | VARCHAR2 1 | Patient sex |
+| DATE_OF_BIRTH | DATE | Patient date of birth |
+| MRN | VARCHAR2 23 | Medical record number |
+
 ### V_P_LAB_SPECIMEN_BARCODE — Tube barcode
 
 | Column | Type | Description |
@@ -407,6 +425,68 @@ V_S_ARE_BILLRULES.BRCPTCODE → V_S_ARE_CPTTABLE.CPTCODE
 V_S_ARE_BILLRULES.BRPYOCODE → V_S_ARE_PAYOR (payor-specific billing rules)
 V_S_ARE_BILLRULES.BRCCIMOD → V_S_ARE_MODIFIER.MODCODE (configured CCI override modifier)
 ```
+
+### V_P_ARE_VISIT — Visit data
+
+| Column | Type | Description |
+|--------|------|-------------|
+| VTINTN | NUMBER | PK — visit internal number (NOT NULL) |
+| VTREFNO | VARCHAR2 19 | Invoice/reference number (NOT NULL) |
+| VTPTINTN | NUMBER | FK → Patient internal number (NOT NULL) |
+| VTSTINTN | NUMBER | FK → Stay internal number |
+| VTREFDOC | VARCHAR2 15 | Referring doctor code |
+| VTFCLTY | VARCHAR2 15 | Facility |
+| VTDEPOT | VARCHAR2 11 | Depot/site |
+| VTREGION | VARCHAR2 1 | Region |
+| VTCILNSDT | DATE | Client send date |
+| VTFILNSDT | DATE | File send date |
+| VTDOCTOR | VARCHAR2 15 | Doctor code |
+| VTADMDOC | VARCHAR2 15 | Admitting doctor code |
+| VTPLINTN | NUMBER | FK → Policy internal number |
+| VTACINTN | NUMBER | FK → Account internal number (NOT NULL) |
+| VTPTTYPE | VARCHAR2 1 | Patient type |
+| VTAUTHNO | VARCHAR2 30 | Authorization number |
+| VTAUTHDTM | DATE | Authorization date/time |
+| VTAUTHUSR | VARCHAR2 16 | Authorization user |
+| VTDUNLVL | NUMBER | Dunning level |
+| VTPRNBIL | NUMBER | Print bill flag |
+| VTHOLDTILL | DATE | Hold until date |
+| VTSRVDT | DATE | Service date |
+| VTPOSTDT | DATE | Post date |
+| VTVERDT | DATE | Verification date |
+| VTINVDT | DATE | Invoice date |
+| VTFBDT | DATE | First bill date |
+| VTLBDT | DATE | Last bill date |
+| VTFPMTDT | DATE | First payment date |
+| VTLPMTDT | DATE | Last payment date |
+| VTLACTDT | DATE | Last activity date |
+| VTCHARGE | NUMBER | Charge amount |
+| VTPAID | NUMBER | Paid amount |
+| VTADJUST | NUMBER | Adjustment amount |
+| VTBDEBTDTM | DATE | Bad debt date/time |
+| VTCOLAGN | VARCHAR2 5 | Collection agency |
+| VTBDEBAMT | NUMBER | Bad debt amount |
+| VTBDEBREC | NUMBER | Bad debt recovered |
+| VTSTAT | NUMBER | Status (NOT NULL) |
+| VTCREATDTM | DATE | Created date/time |
+| VTEDITDTM | DATE | Last edited date/time |
+| VTCREATBY | VARCHAR2 16 | Created by user |
+| VTEDITBY | VARCHAR2 16 | Last edited by user |
+| VTFLAGS | NUMBER | Flags |
+| VTPCAREDOC | VARCHAR2 15 | Primary care doctor |
+| VTAUTHBY | VARCHAR2 31 | Authorized by |
+| VTPLINTN2 | NUMBER | FK → Policy internal number 2 |
+| VTPLINTN3 | NUMBER | FK → Policy internal number 3 |
+| VTTYPE | NUMBER | Visit type (NOT NULL) |
+| VTWARD | VARCHAR2 15 | Ward |
+| VTACCSEQ | VARCHAR2 3 | Accession sequence |
+| VTREADY | NUMBER | Ready flag (NOT NULL) |
+| VTRSLTSTS | NUMBER | Result status (NOT NULL) |
+| VTPBDT | DATE | PB date |
+| VTAGECLOSEDT | DATE | Age close date (NOT NULL) |
+| VTORGORDNUM | VARCHAR2 19 | Original order number / accession number |
+| VTHOLDRES | NUMBER | Hold reason |
+| VTKIND | VARCHAR2 1 | Kind |
 
 ### V_S_ARE_CCI — CCI (Correct Coding Initiative) edit pairs
 
