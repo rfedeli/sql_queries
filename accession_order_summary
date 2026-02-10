@@ -1,6 +1,7 @@
 -- Accession summary: order count, specimens collected, tests ordered
 -- SoftLab only (excludes Blood Bank and Microbiology)
--- Filters: excludes all cancelled records; requires >=1 verified result per order;
+-- Filters: MRNs matching E followed by digits only (e.g. E123456789);
+--          excludes all cancelled records; requires >=1 verified result per order;
 --          excludes orders where every result is '.' (cancelled tests)
 -- Parameters:
 --   :start_date  YYYYMMDD  inclusive  (e.g. 20250101 for annual, 20250101 for monthly)
@@ -12,10 +13,15 @@ WITH
             o.AA_ID AS order_aa_id,
             o.ID    AS accession
         FROM V_P_LAB_ORDER o
+            INNER JOIN V_P_LAB_STAY s
+                ON s.AA_ID = o.STAY_AA_ID
+            INNER JOIN V_P_LAB_PATIENT p
+                ON p.AA_ID = s.PATIENT_AA_ID
             INNER JOIN V_P_LAB_TEST_RESULT tr
                 ON tr.ORDER_AA_ID = o.AA_ID
         WHERE
-            tr.VERIFIED_DT >= TO_DATE(:start_date, 'YYYYMMDD')
+            REGEXP_LIKE(p.ID, '^E[0-9]+$')
+            AND tr.VERIFIED_DT >= TO_DATE(:start_date, 'YYYYMMDD')
             AND tr.VERIFIED_DT < TO_DATE(:end_date, 'YYYYMMDD') + 1
             AND tr.STATE IN ('Final', 'Corrected')
         GROUP BY o.AA_ID, o.ID
