@@ -1,0 +1,126 @@
+-- Uninvoiced Visits Report — Billing pipeline tracker
+-- Source views: V_P_ARE_VISIT, V_P_ARE_BILLERROR, V_P_ARE_ITEM
+--
+-- Tracks visits through the billing pipeline: where they sit,
+-- how long they've been there, and what errors are logged.
+-- Uninvoiced visits have no items in V_P_ARE_ITEM (visit shell only).
+--
+-- Parameters:
+--   :start_date  YYYYMMDD  inclusive
+--   :end_date    YYYYMMDD  inclusive
+
+----------------------------------------------------------------------
+-- 1. Pipeline Summary
+--    High-level counts showing where visits sit in the billing
+--    pipeline within the date range.
+----------------------------------------------------------------------
+SELECT
+  COUNT(*)                                              AS TOTAL_VISITS,
+  -- Invoiced
+  SUM(CASE WHEN vt.VTINVDT IS NOT NULL
+            AND  vt.VTFBDT  IS NOT NULL
+       THEN 1 ELSE 0 END)                              AS INVOICED_AND_BILLED,
+  SUM(CASE WHEN vt.VTINVDT IS NOT NULL
+            AND  vt.VTFBDT  IS NULL
+       THEN 1 ELSE 0 END)                              AS INVOICED_NOT_BILLED,
+  -- Uninvoiced
+  SUM(CASE WHEN vt.VTINVDT IS NULL
+       THEN 1 ELSE 0 END)                              AS UNINVOICED,
+  SUM(CASE WHEN vt.VTINVDT IS NULL
+            AND  EXISTS (SELECT 1
+                         FROM V_P_ARE_BILLERROR be
+                         WHERE be.BERVTINTN = vt.VTINTN)
+       THEN 1 ELSE 0 END)                              AS UNINVOICED_WITH_ERRORS,
+  SUM(CASE WHEN vt.VTINVDT IS NULL
+            AND  NOT EXISTS (SELECT 1
+                             FROM V_P_ARE_BILLERROR be
+                             WHERE be.BERVTINTN = vt.VTINTN)
+       THEN 1 ELSE 0 END)                              AS UNINVOICED_NO_ERRORS,
+  -- Uninvoiced by VTSTAT
+  SUM(CASE WHEN vt.VTINVDT IS NULL AND vt.VTSTAT = 0
+       THEN 1 ELSE 0 END)                              AS UNINV_STAT0_PENDING,
+  SUM(CASE WHEN vt.VTINVDT IS NULL AND vt.VTSTAT = 1
+       THEN 1 ELSE 0 END)                              AS UNINV_STAT1_ACTIVE,
+  SUM(CASE WHEN vt.VTINVDT IS NULL AND vt.VTSTAT = 2
+       THEN 1 ELSE 0 END)                              AS UNINV_STAT2_HELD,
+  SUM(CASE WHEN vt.VTINVDT IS NULL AND vt.VTSTAT = 3
+       THEN 1 ELSE 0 END)                              AS UNINV_STAT3_NOCHARGE,
+  SUM(CASE WHEN vt.VTINVDT IS NULL
+            AND  vt.VTSTAT NOT IN (0, 1, 2, 3)
+       THEN 1 ELSE 0 END)                              AS UNINV_STAT_OTHER
+FROM V_P_ARE_VISIT vt
+WHERE vt.VTSRVDT >= TO_DATE(:start_date, 'YYYYMMDD')
+  AND vt.VTSRVDT <  TO_DATE(:end_date, 'YYYYMMDD') + 1;
+
+----------------------------------------------------------------------
+-- 2. Uninvoiced Visit Detail
+--    Every visit without an invoice in the date range.
+--    Shows visit status, charge, age, and whether billing errors
+--    or line items exist.
+----------------------------------------------------------------------
+SELECT
+  vt.VTREFNO                   AS INVOICE_NO,
+  vt.VTORGORDNUM               AS ACCESSION_NO,
+  vt.VTSRVDT                   AS SERVICE_DT,
+  vt.VTSTAT                    AS VISIT_STATUS,
+  vt.VTREADY                   AS READY,
+  vt.VTCHARGE                  AS CHARGE_AMT,
+  vt.VTFCLTY                   AS FACILITY,
+  vt.VTKIND                    AS KIND,
+  vt.VTCREATDTM                AS CREATED_DT,
+  TRUNC(SYSDATE) - TRUNC(vt.VTSRVDT) AS AGE_DAYS,
+  CASE WHEN EXISTS (SELECT 1
+                    FROM V_P_ARE_BILLERROR be
+                    WHERE be.BERVTINTN = vt.VTINTN)
+       THEN 'Y' ELSE 'N' END  AS HAS_ERRORS,
+  CASE WHEN EXISTS (SELECT 1
+                    FROM V_P_ARE_ITEM it
+                    WHERE it.ITVTINTN = vt.VTINTN)
+       THEN 'Y' ELSE 'N' END  AS HAS_ITEMS
+FROM V_P_ARE_VISIT vt
+WHERE vt.VTSRVDT >= TO_DATE(:start_date, 'YYYYMMDD')
+  AND vt.VTSRVDT <  TO_DATE(:end_date, 'YYYYMMDD') + 1
+  AND vt.VTINVDT IS NULL
+ORDER BY vt.VTSRVDT, vt.VTREFNO;
+
+----------------------------------------------------------------------
+-- 3. Billing Errors on Uninvoiced Visits
+--    All error entries logged against uninvoiced visits,
+--    with visit context and age.
+----------------------------------------------------------------------
+SELECT
+  vt.VTREFNO                   AS INVOICE_NO,
+  vt.VTORGORDNUM               AS ACCESSION_NO,
+  vt.VTSRVDT                   AS SERVICE_DT,
+  vt.VTSTAT                    AS VISIT_STATUS,
+  vt.VTFCLTY                   AS FACILITY,
+  TRUNC(SYSDATE) - TRUNC(vt.VTSRVDT) AS AGE_DAYS,
+  be.BERDESC                   AS ERROR_DESC,
+  be.BERDTM                    AS ERROR_DT,
+  be.BEFLAGS                   AS ERROR_FLAGS,
+  be.BECNT                     AS ERROR_CNT
+FROM V_P_ARE_BILLERROR be
+  INNER JOIN V_P_ARE_VISIT vt
+    ON vt.VTINTN = be.BERVTINTN
+WHERE vt.VTSRVDT >= TO_DATE(:start_date, 'YYYYMMDD')
+  AND vt.VTSRVDT <  TO_DATE(:end_date, 'YYYYMMDD') + 1
+  AND vt.VTINVDT IS NULL
+ORDER BY vt.VTSRVDT, vt.VTREFNO, be.BERDTM;
+
+----------------------------------------------------------------------
+-- 4. Error Summary
+--    Aggregate counts of each billing error description
+--    on uninvoiced visits within the date range.
+----------------------------------------------------------------------
+SELECT
+  be.BERDESC                   AS ERROR_DESC,
+  COUNT(DISTINCT vt.VTINTN)    AS VISIT_CNT,
+  COUNT(*)                     AS ERROR_CNT
+FROM V_P_ARE_BILLERROR be
+  INNER JOIN V_P_ARE_VISIT vt
+    ON vt.VTINTN = be.BERVTINTN
+WHERE vt.VTSRVDT >= TO_DATE(:start_date, 'YYYYMMDD')
+  AND vt.VTSRVDT <  TO_DATE(:end_date, 'YYYYMMDD') + 1
+  AND vt.VTINVDT IS NULL
+GROUP BY be.BERDESC
+ORDER BY VISIT_CNT DESC;

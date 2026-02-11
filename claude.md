@@ -455,8 +455,8 @@ V_S_ARE_BILLRULES.BRCCIMOD → V_S_ARE_MODIFIER.MODCODE (configured CCI override
 | VTSRVDT | DATE | Service date |
 | VTPOSTDT | DATE | Post date |
 | VTVERDT | DATE | Verification date |
-| VTINVDT | DATE | Invoice date |
-| VTFBDT | DATE | First bill date |
+| VTINVDT | DATE | Invoice date (NULL = never invoiced) |
+| VTFBDT | DATE | First bill date (NULL = never billed) |
 | VTLBDT | DATE | Last bill date |
 | VTFPMTDT | DATE | First payment date |
 | VTLPMTDT | DATE | Last payment date |
@@ -468,7 +468,7 @@ V_S_ARE_BILLRULES.BRCCIMOD → V_S_ARE_MODIFIER.MODCODE (configured CCI override
 | VTCOLAGN | VARCHAR2 5 | Collection agency |
 | VTBDEBAMT | NUMBER | Bad debt amount |
 | VTBDEBREC | NUMBER | Bad debt recovered |
-| VTSTAT | NUMBER | Status (NOT NULL) |
+| VTSTAT | NUMBER | Status (NOT NULL): 0=pending, 1=active/normal, 2=held/blocked, 3=no-charge/cancelled, 4=other |
 | VTCREATDTM | DATE | Created date/time |
 | VTEDITDTM | DATE | Last edited date/time |
 | VTCREATBY | VARCHAR2 16 | Created by user |
@@ -691,6 +691,9 @@ V_S_ARE_BILLRULES.BRCCIMOD → V_S_ARE_MODIFIER.MODCODE (configured CCI override
 - There is no item-level FK (no `BEITINTN` column).
 - `BERCODE` and `BEORDER` are typically empty — `BERDESC` carries the error detail.
 - `BERDTM` date generally matches the visit service date (`VTSRVDT`).
+- Most billing errors are non-blocking warnings — ~267K visits with errors still got invoiced and billed.
+- Uninvoiced visits (`VTINVDT IS NULL`) have **zero items** in `V_P_ARE_ITEM` — they are visit shells only.
+- Common error categories on uninvoiced visits: invoice-when restriction (components not yet resulted), review needed, auto-split leftovers, invalid/missing payor, frequency limit, workstation-facility mismatch.
 
 ---
 
