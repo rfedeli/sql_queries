@@ -1,0 +1,163 @@
+-- Discovery: V_P_ARE_BILLERROR column structure
+-- Run these against the database, then share results so we can
+-- update the data dictionary and fix Query 3 in billing_blocks.
+
+----------------------------------------------------------------------
+-- 1. Column listing for V_P_ARE_BILLERROR
+----------------------------------------------------------------------
+SELECT
+  COLUMN_NAME,
+  DATA_TYPE,
+  DATA_LENGTH,
+  DATA_PRECISION,
+  DATA_SCALE,
+  NULLABLE,
+  COLUMN_ID
+FROM ALL_TAB_COLUMNS
+WHERE TABLE_NAME = 'V_P_ARE_BILLERROR'
+ORDER BY COLUMN_ID;
+
+----------------------------------------------------------------------
+-- 2. Column comments (if any)
+----------------------------------------------------------------------
+SELECT
+  COLUMN_NAME,
+  COMMENTS
+FROM ALL_COL_COMMENTS
+WHERE TABLE_NAME = 'V_P_ARE_BILLERROR'
+  AND COMMENTS IS NOT NULL
+ORDER BY COLUMN_NAME;
+
+----------------------------------------------------------------------
+-- 3. Sample data (first 10 rows) to understand content
+----------------------------------------------------------------------
+SELECT *
+FROM V_P_ARE_BILLERROR
+WHERE ROWNUM <= 10;
+
+----------------------------------------------------------------------
+-- 4. Verify our assumed blocking flag semantics
+--    Check distinct values for the item-level block columns
+--    to confirm 0 = ok, non-zero = flagged
+----------------------------------------------------------------------
+SELECT 'ITFREQSTAT' AS COL, ITFREQSTAT AS VAL, COUNT(*) AS CNT
+FROM V_P_ARE_ITEM
+WHERE ITSRVDT >= TO_DATE('20250101', 'YYYYMMDD')
+GROUP BY ITFREQSTAT
+ORDER BY CNT DESC;
+
+SELECT 'ITMEDNECSTAT' AS COL, ITMEDNECSTAT AS VAL, COUNT(*) AS CNT
+FROM V_P_ARE_ITEM
+WHERE ITSRVDT >= TO_DATE('20250101', 'YYYYMMDD')
+GROUP BY ITMEDNECSTAT
+ORDER BY CNT DESC;
+
+SELECT 'ITABN' AS COL, ITABN AS VAL, COUNT(*) AS CNT
+FROM V_P_ARE_ITEM
+WHERE ITSRVDT >= TO_DATE('20250101', 'YYYYMMDD')
+GROUP BY ITABN
+ORDER BY CNT DESC;
+
+----------------------------------------------------------------------
+-- 5. Verify visit-level flag semantics
+----------------------------------------------------------------------
+SELECT 'VTREADY' AS COL, VTREADY AS VAL, COUNT(*) AS CNT
+FROM V_P_ARE_VISIT
+WHERE VTSRVDT >= TO_DATE('20250101', 'YYYYMMDD')
+GROUP BY VTREADY
+ORDER BY CNT DESC;
+
+SELECT 'VTHOLDRES' AS COL, VTHOLDRES AS VAL, COUNT(*) AS CNT
+FROM V_P_ARE_VISIT
+WHERE VTSRVDT >= TO_DATE('20250101', 'YYYYMMDD')
+GROUP BY VTHOLDRES
+ORDER BY CNT DESC;
+
+----------------------------------------------------------------------
+-- 6. BILLERROR join path — does BERVTINTN link to VISIT?
+--    If CNT > 0 the FK is confirmed.
+----------------------------------------------------------------------
+SELECT COUNT(*) AS MATCHED
+FROM V_P_ARE_BILLERROR be
+  INNER JOIN V_P_ARE_VISIT vt
+    ON vt.VTINTN = be.BERVTINTN;
+
+----------------------------------------------------------------------
+-- 7. BILLERROR → VISIT → ITEM join path
+--    Confirms we can reach items through the visit.
+----------------------------------------------------------------------
+SELECT COUNT(*) AS MATCHED
+FROM V_P_ARE_BILLERROR be
+  INNER JOIN V_P_ARE_VISIT vt
+    ON vt.VTINTN = be.BERVTINTN
+  INNER JOIN V_P_ARE_ITEM it
+    ON it.ITVTINTN = vt.VTINTN;
+
+----------------------------------------------------------------------
+-- 8. Does BEORDER match V_P_ARE_VISIT.VTORGORDNUM?
+--    If so, BEORDER identifies the accession directly.
+----------------------------------------------------------------------
+SELECT COUNT(*) AS MATCHED
+FROM V_P_ARE_BILLERROR be
+  INNER JOIN V_P_ARE_VISIT vt
+    ON vt.VTORGORDNUM = be.BEORDER;
+
+----------------------------------------------------------------------
+-- 9. Sample BILLERROR joined to VISIT — eyeball the relationship
+----------------------------------------------------------------------
+SELECT
+  be.BEINTN,
+  be.BERVTINTN,
+  be.BERCODE,
+  be.BERDESC,
+  be.BEORDER,
+  be.BERDTM,
+  vt.VTREFNO        AS INVOICE_NO,
+  vt.VTORGORDNUM    AS ACCESSION_NO,
+  vt.VTSRVDT        AS SERVICE_DT
+FROM V_P_ARE_BILLERROR be
+  INNER JOIN V_P_ARE_VISIT vt
+    ON vt.VTINTN = be.BERVTINTN
+WHERE ROWNUM <= 20
+ORDER BY be.BERDTM DESC;
+
+----------------------------------------------------------------------
+-- 10. VTREADY semantics — what does each value look like?
+--     Pull a few visits with VTREADY=1 and check VTSTAT, VTCHARGE
+--     to see if 1 means "not ready" (held from billing).
+----------------------------------------------------------------------
+SELECT
+  vt.VTINTN,
+  vt.VTREFNO,
+  vt.VTREADY,
+  vt.VTSTAT,
+  vt.VTCHARGE,
+  vt.VTHOLDTILL,
+  vt.VTHOLDRES,
+  vt.VTSRVDT
+FROM V_P_ARE_VISIT vt
+WHERE vt.VTSRVDT >= TO_DATE('20250101', 'YYYYMMDD')
+  AND vt.VTREADY = 1
+  AND ROWNUM <= 10;
+
+----------------------------------------------------------------------
+-- 11. ITABN — any other values historically?
+----------------------------------------------------------------------
+SELECT ITABN AS VAL, COUNT(*) AS CNT
+FROM V_P_ARE_ITEM
+GROUP BY ITABN
+ORDER BY CNT DESC;
+
+----------------------------------------------------------------------
+-- 12. ITABN=2 — which tests/CPTs are flagged and how often?
+----------------------------------------------------------------------
+SELECT
+  it.ITTSTCODE    AS TEST_CODE,
+  it.ITCPTCD      AS CPT_CODE,
+  it.ITDESC       AS ITEM_DESC,
+  COUNT(*)        AS CNT
+FROM V_P_ARE_ITEM it
+WHERE it.ITABN = 2
+  AND it.ITSRVDT >= TO_DATE('20250101', 'YYYYMMDD')
+GROUP BY it.ITTSTCODE, it.ITCPTCD, it.ITDESC
+ORDER BY CNT DESC;

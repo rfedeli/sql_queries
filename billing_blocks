@@ -1,0 +1,197 @@
+-- Billing Blocks Report — Items held from billing and why
+-- Source views: V_P_ARE_ITEM, V_P_ARE_VISIT, V_S_ARE_CCI, V_S_ARE_CPTTABLE, V_S_ARE_TEST, V_P_ARE_BILLERROR
+--
+-- Block types detected:
+--   Item-level:  CCI edit (ITCCITINTN), frequency limit (ITFREQSTAT),
+--                medical necessity (ITMEDNECSTAT), ABN (ITABN)
+--   Visit-level: hold date (VTHOLDTILL), hold reason (VTHOLDRES),
+--                not ready (VTREADY)
+-- Parameters:
+--   :start_date  YYYYMMDD  inclusive
+--   :end_date    YYYYMMDD  inclusive
+
+----------------------------------------------------------------------
+-- 1. Blocked Items Detail
+--    Every billing line item with at least one block active,
+--    showing visit context, item detail, and which blocks are flagged.
+----------------------------------------------------------------------
+SELECT
+  vt.VTREFNO                  AS INVOICE_NO,
+  vt.VTORGORDNUM              AS ACCESSION_NO,
+  it.ITINTN                   AS ITEM_ID,
+  it.ITSRVDT                  AS SERVICE_DT,
+  it.ITTSTCODE                AS TEST_CODE,
+  tst.TSTDESC                 AS TEST_DESC,
+  it.ITCPTCD                  AS CPT_CODE,
+  cpt.CPTDESC                 AS CPT_DESC,
+  it.ITDESC                   AS ITEM_DESC,
+  it.ITSTAT                   AS ITEM_STATUS,
+  it.ITFCLTY                  AS FACILITY,
+  -- Item-level block flags
+  CASE WHEN it.ITCCITINTN IS NOT NULL AND it.ITCCITINTN <> 0
+       THEN 'Y' ELSE 'N' END AS CCI_FLAGGED,
+  CASE WHEN NVL(it.ITFREQSTAT, 0) <> 0
+       THEN 'Y' ELSE 'N' END AS FREQ_LIMIT_FLAGGED,
+  CASE WHEN NVL(it.ITMEDNECSTAT, 0) <> 0
+       THEN 'Y' ELSE 'N' END AS MED_NECESSITY_FLAGGED,
+  CASE WHEN NVL(it.ITABN, 0) <> 0
+       THEN 'Y' ELSE 'N' END AS ABN_FLAGGED,
+  -- Visit-level block flags
+  CASE WHEN vt.VTHOLDTILL > SYSDATE
+       THEN 'Y' ELSE 'N' END AS VISIT_HELD,
+  CASE WHEN NVL(vt.VTHOLDRES, 0) <> 0
+       THEN 'Y' ELSE 'N' END AS VISIT_HOLD_REASON,
+  CASE WHEN NVL(vt.VTREADY, 0) <> 0
+       THEN 'Y' ELSE 'N' END AS VISIT_NOT_READY,
+  -- CCI detail (when flagged)
+  cci.CCCPT1                  AS CCI_CPT_COL1,
+  cci.CCCPT2                  AS CCI_CPT_COL2,
+  cci.CCERRCODE               AS CCI_ERROR_CODE,
+  cci.CCPYOCODE               AS CCI_PAYOR,
+  -- Hold detail
+  vt.VTHOLDTILL               AS HOLD_UNTIL_DT,
+  vt.VTHOLDRES                AS HOLD_REASON_CODE,
+  -- Concatenated block summary
+  TRIM(BOTH ', ' FROM
+       CASE WHEN it.ITCCITINTN IS NOT NULL AND it.ITCCITINTN <> 0
+            THEN 'CCI' END
+    || CASE WHEN NVL(it.ITFREQSTAT, 0) <> 0
+            THEN ', Freq Limit' END
+    || CASE WHEN NVL(it.ITMEDNECSTAT, 0) <> 0
+            THEN ', Med Necessity' END
+    || CASE WHEN NVL(it.ITABN, 0) <> 0
+            THEN ', ABN' END
+    || CASE WHEN vt.VTHOLDTILL > SYSDATE
+            THEN ', Visit Hold' END
+    || CASE WHEN NVL(vt.VTHOLDRES, 0) <> 0
+            THEN ', Hold Reason' END
+    || CASE WHEN NVL(vt.VTREADY, 0) <> 0
+            THEN ', Not Ready' END
+  )                           AS BLOCK_REASONS
+FROM V_P_ARE_ITEM it
+  INNER JOIN V_P_ARE_VISIT vt
+    ON vt.VTINTN = it.ITVTINTN
+  LEFT JOIN V_S_ARE_CCI cci
+    ON cci.CCINTN = it.ITCCITINTN
+  LEFT JOIN V_S_ARE_CPTTABLE cpt
+    ON cpt.CPTCODE = it.ITCPTCD
+  LEFT JOIN V_S_ARE_TEST tst
+    ON tst.TSTCODE = it.ITTSTCODE
+WHERE it.ITSRVDT >= TO_DATE(:start_date, 'YYYYMMDD')
+  AND it.ITSRVDT <  TO_DATE(:end_date, 'YYYYMMDD') + 1
+  AND (
+    -- Item-level blocks
+    (it.ITCCITINTN IS NOT NULL AND it.ITCCITINTN <> 0)
+    OR NVL(it.ITFREQSTAT, 0) <> 0
+    OR NVL(it.ITMEDNECSTAT, 0) <> 0
+    OR NVL(it.ITABN, 0) <> 0
+    -- Visit-level blocks
+    OR vt.VTHOLDTILL > SYSDATE
+    OR NVL(vt.VTHOLDRES, 0) <> 0
+    OR NVL(vt.VTREADY, 0) <> 0
+  )
+ORDER BY it.ITSRVDT, vt.VTREFNO, it.ITCPTCD;
+
+----------------------------------------------------------------------
+-- 2. Block Summary
+--    Count of blocked items by block type within the date range.
+--    An item can appear in multiple categories if it has several blocks.
+----------------------------------------------------------------------
+SELECT
+  'CCI Edit'          AS BLOCK_TYPE,
+  COUNT(*)            AS ITEM_COUNT
+FROM V_P_ARE_ITEM it
+WHERE it.ITSRVDT >= TO_DATE(:start_date, 'YYYYMMDD')
+  AND it.ITSRVDT <  TO_DATE(:end_date, 'YYYYMMDD') + 1
+  AND it.ITCCITINTN IS NOT NULL AND it.ITCCITINTN <> 0
+
+UNION ALL
+
+SELECT
+  'Frequency Limit'   AS BLOCK_TYPE,
+  COUNT(*)            AS ITEM_COUNT
+FROM V_P_ARE_ITEM it
+WHERE it.ITSRVDT >= TO_DATE(:start_date, 'YYYYMMDD')
+  AND it.ITSRVDT <  TO_DATE(:end_date, 'YYYYMMDD') + 1
+  AND NVL(it.ITFREQSTAT, 0) <> 0
+
+UNION ALL
+
+SELECT
+  'Medical Necessity' AS BLOCK_TYPE,
+  COUNT(*)            AS ITEM_COUNT
+FROM V_P_ARE_ITEM it
+WHERE it.ITSRVDT >= TO_DATE(:start_date, 'YYYYMMDD')
+  AND it.ITSRVDT <  TO_DATE(:end_date, 'YYYYMMDD') + 1
+  AND NVL(it.ITMEDNECSTAT, 0) <> 0
+
+UNION ALL
+
+SELECT
+  'ABN'               AS BLOCK_TYPE,
+  COUNT(*)            AS ITEM_COUNT
+FROM V_P_ARE_ITEM it
+WHERE it.ITSRVDT >= TO_DATE(:start_date, 'YYYYMMDD')
+  AND it.ITSRVDT <  TO_DATE(:end_date, 'YYYYMMDD') + 1
+  AND NVL(it.ITABN, 0) <> 0
+
+UNION ALL
+
+SELECT
+  'Visit Hold'        AS BLOCK_TYPE,
+  COUNT(*)            AS ITEM_COUNT
+FROM V_P_ARE_ITEM it
+  INNER JOIN V_P_ARE_VISIT vt
+    ON vt.VTINTN = it.ITVTINTN
+WHERE it.ITSRVDT >= TO_DATE(:start_date, 'YYYYMMDD')
+  AND it.ITSRVDT <  TO_DATE(:end_date, 'YYYYMMDD') + 1
+  AND vt.VTHOLDTILL > SYSDATE
+
+UNION ALL
+
+SELECT
+  'Hold Reason'       AS BLOCK_TYPE,
+  COUNT(*)            AS ITEM_COUNT
+FROM V_P_ARE_ITEM it
+  INNER JOIN V_P_ARE_VISIT vt
+    ON vt.VTINTN = it.ITVTINTN
+WHERE it.ITSRVDT >= TO_DATE(:start_date, 'YYYYMMDD')
+  AND it.ITSRVDT <  TO_DATE(:end_date, 'YYYYMMDD') + 1
+  AND NVL(vt.VTHOLDRES, 0) <> 0
+
+UNION ALL
+
+SELECT
+  'Visit Not Ready'   AS BLOCK_TYPE,
+  COUNT(*)            AS ITEM_COUNT
+FROM V_P_ARE_ITEM it
+  INNER JOIN V_P_ARE_VISIT vt
+    ON vt.VTINTN = it.ITVTINTN
+WHERE it.ITSRVDT >= TO_DATE(:start_date, 'YYYYMMDD')
+  AND it.ITSRVDT <  TO_DATE(:end_date, 'YYYYMMDD') + 1
+  AND NVL(vt.VTREADY, 0) <> 0
+
+ORDER BY ITEM_COUNT DESC;
+
+----------------------------------------------------------------------
+-- 3. Billing Errors
+--    Visits with entries in V_P_ARE_BILLERROR.
+--    BILLERROR is visit-level (BERVTINTN → VTINTN); there is no
+--    item-level FK.  BERCODE and BEORDER are typically empty.
+----------------------------------------------------------------------
+SELECT
+  vt.VTREFNO                  AS INVOICE_NO,
+  vt.VTORGORDNUM              AS ACCESSION_NO,
+  vt.VTSRVDT                  AS SERVICE_DT,
+  be.BEINTN                   AS ERROR_ID,
+  be.BERDESC                  AS ERROR_DESC,
+  be.BERDTM                   AS ERROR_DT,
+  be.BEFLAGS                  AS ERROR_FLAGS,
+  be.BECNT                    AS ERROR_CNT,
+  be.BEREDTDTM                AS ERROR_EDIT_DT
+FROM V_P_ARE_BILLERROR be
+  INNER JOIN V_P_ARE_VISIT vt
+    ON vt.VTINTN = be.BERVTINTN
+WHERE vt.VTSRVDT >= TO_DATE(:start_date, 'YYYYMMDD')
+  AND vt.VTSRVDT <  TO_DATE(:end_date, 'YYYYMMDD') + 1
+ORDER BY vt.VTSRVDT, vt.VTREFNO;

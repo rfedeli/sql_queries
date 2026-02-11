@@ -33,6 +33,7 @@ SoftAR views use abbreviated column-name prefixes instead of full names:
 | `CPT*` | V_S_ARE_CPTTABLE | CPTCODE, CPTDESC |
 | `TST*` | V_S_ARE_TEST | TSTCODE, TSTDESC |
 | `IT*` | V_P_ARE_ITEM | ITINTN, ITCPTCD |
+| `BE*` | V_P_ARE_BILLERROR | BEINTN, BERDESC |
 | `MOD*` | V_S_ARE_MODIFIER | MODCODE, MODDESC |
 
 Common SoftAR suffixes: `*INTN` = internal number (PK), `*STAT` = status (0=active), `*CREATDTM`/`*EDITDTM` = audit timestamps, `*CREATBY`/`*EDITBY` = audit user.
@@ -480,7 +481,7 @@ V_S_ARE_BILLRULES.BRCCIMOD → V_S_ARE_MODIFIER.MODCODE (configured CCI override
 | VTTYPE | NUMBER | Visit type (NOT NULL) |
 | VTWARD | VARCHAR2 15 | Ward |
 | VTACCSEQ | VARCHAR2 3 | Accession sequence |
-| VTREADY | NUMBER | Ready flag (NOT NULL) |
+| VTREADY | NUMBER | Ready flag (NOT NULL): 0=ready to bill, 1=not ready (visit unbilled) |
 | VTRSLTSTS | NUMBER | Result status (NOT NULL) |
 | VTPBDT | DATE | PB date |
 | VTAGECLOSEDT | DATE | Age close date (NOT NULL) |
@@ -645,9 +646,9 @@ V_S_ARE_BILLRULES.BRCCIMOD → V_S_ARE_MODIFIER.MODCODE (configured CCI override
 | ITFLAGS | NUMBER | Flags |
 | ITCHARGECD | VARCHAR2 11 | Charge code |
 | ITDESC | VARCHAR2 79 | Item description |
-| ITFREQSTAT | NUMBER | Frequency limit status |
-| ITMEDNECSTAT | NUMBER | Medical necessity status |
-| ITABN | NUMBER | ABN status |
+| ITFREQSTAT | NUMBER | Frequency limit status (0=ok; non-zero=flagged — always 0 in practice) |
+| ITMEDNECSTAT | NUMBER | Medical necessity status (0=ok; non-zero=flagged — always 0 in practice) |
+| ITABN | NUMBER | ABN status (0=ok, 2=ABN flagged — concentrated on micro tests) |
 | ITCCITINTN | NUMBER | FK → V_S_ARE_CCI.CCINTN (system-flagged CCI edit) |
 | ITMODFLAG | NUMBER | Modifier flag |
 | ITBQNT | NUMBER | Billed quantity |
@@ -669,6 +670,27 @@ V_S_ARE_BILLRULES.BRCCIMOD → V_S_ARE_MODIFIER.MODCODE (configured CCI override
 | ITPERFDCCODE | VARCHAR2 15 | Performing doctor code |
 | ITWARD | VARCHAR2 15 | Ward |
 | ITGRANTNO | VARCHAR2 25 | Grant number |
+
+### V_P_ARE_BILLERROR — Billing errors (visit-level)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| BEINTN | NUMBER(14) | PK — internal number (NOT NULL) |
+| BERVTINTN | NUMBER(14) | FK → V_P_ARE_VISIT.VTINTN |
+| BERCODE | VARCHAR2 5 | Error code (typically empty in practice) |
+| BERDESC | VARCHAR2 1023 | Error description (primary useful field) |
+| BERDTM | DATE | Error date/time (NOT NULL) |
+| BEFLAGS | NUMBER(2) | Flags (NOT NULL) |
+| BEORDER | VARCHAR2 19 | Order number (typically empty in practice) |
+| BEJBINTN | NUMBER(14) | Job internal number |
+| BEREDTDTM | DATE | Edit date/time |
+| BECNT | NUMBER(5) | Count |
+
+**Notes:**
+- BILLERROR is visit-level, not item-level. Join on `BERVTINTN → VTINTN`.
+- There is no item-level FK (no `BEITINTN` column).
+- `BERCODE` and `BEORDER` are typically empty — `BERDESC` carries the error detail.
+- `BERDTM` date generally matches the visit service date (`VTSRVDT`).
 
 ---
 
