@@ -1,28 +1,32 @@
--- Unbilled Items Report — All visits with uninvoiced/unbilled flags
--- Source views: V_P_ARE_VISIT, V_P_ARE_ITEM, V_P_ARE_INVOICE, V_S_ARE_PAYOR,
---              V_S_ARE_TEST, V_S_ARE_CPTTABLE, V_P_ARE_BILLERROR, V_S_ARE_ARERROR,
---              V_P_LAB_ORDERED_TEST, V_P_LAB_TEST_RESULT
+-- Unbilled Items Report — Visits stuck in the billing pipeline
+-- Covers all 4 unbilled patterns discovered during investigation:
+--   1. Uninvoiced (VTINVDT IS NULL) — visit never got an invoice
+--   2. Invoiced but unbilled (VTFBDT IS NULL) — invoice exists, never sent to payor
+--   3. Billing errors blocking progress — error code, action, stage, raw description
+--   4. Orders missing from AR — lab orders that never crossed to SoftAR
+--
+-- Source views: V_P_ARE_VISIT, V_P_ARE_BILLERROR, V_S_ARE_ARERROR,
+--              V_P_LAB_ORDER, V_P_LAB_ORDERED_TEST, V_P_LAB_TEST_RESULT
 -- Parameters:
 --   :start_date  YYYYMMDD  inclusive (service date)
 --   :end_date    YYYYMMDD  inclusive (service date)
 
 ----------------------------------------------------------------------
--- 1. Unbilled Items Detail
---    Every visit in the date range with Y/N flags for:
---      UNINVOICED  — visit was never invoiced (VTINVDT IS NULL; no items exist)
---      UNBILLED    — invoice exists but was never sent to payor (INFBDT IS NULL)
---    Uninvoiced visits have no items, so item columns will be NULL for those rows.
---    Note: INDUEAMT / ITBAL are always 0 in our system — not used for qualifying.
+-- 1. Unbilled Visit-Error Detail
+--    One row per visit/error combination for all unbilled visits.
+--    Shows invoice status, billing status, and the specific error
+--    blocking each visit — modeled after accession_ar_lookup Query 4.
+--    Visits with no errors still appear (with NULL error columns).
 ----------------------------------------------------------------------
 SELECT
-  vt.VTREFNO                                 AS INVOICE_NO,
   vt.VTORGORDNUM                             AS ACCESSION_NO,
+  vt.VTREFNO                                 AS INVOICE_NO,
   vt.VTSRVDT                                 AS SERVICE_DT,
-  -- Status flags
-  CASE WHEN vt.VTINVDT IS NULL
-       THEN 'Y' ELSE 'N' END                AS UNINVOICED,
-  CASE WHEN vt.VTINVDT IS NOT NULL AND inv.INFBDT IS NULL
-       THEN 'Y' ELSE 'N' END                AS UNBILLED,
+  -- Pipeline status
+  CASE WHEN vt.VTINVDT IS NULL THEN 'Uninvoiced'
+       ELSE 'Invoiced' END                   AS INV_STATUS,
+  TO_CHAR(vt.VTINVDT, 'MM/DD/YYYY')         AS INVOICED_DT,
+  TO_CHAR(vt.VTFBDT, 'MM/DD/YYYY')          AS FIRST_BILLED_DT,
   -- Visit detail
   CASE vt.VTSTAT
     WHEN 0 THEN 'Pending'
@@ -35,45 +39,23 @@ SELECT
     WHEN 0 THEN 'Ready'
     WHEN 1 THEN 'Not Ready'
   END                                        AS READY_STATUS,
-  TO_CHAR(vt.VTINVDT, 'MM/DD/YYYY')         AS INVOICED_DT,
-  TO_CHAR(inv.INFBDT, 'MM/DD/YYYY')         AS FIRST_BILLED_DT,
-  -- Payor
-  inv.INBILLTO                               AS PAYOR_CODE,
-  pyo.PYOCLASS                               AS PAYOR_CLASS,
-  CASE pyo.PYOTYPE
-    WHEN 0 THEN 'Insurance'
-    WHEN 1 THEN 'Client'
-    WHEN 2 THEN 'Self-Pay'
-    WHEN 3 THEN 'Collection'
-    WHEN 4 THEN 'Undetermined'
-  END                                        AS PAYOR_TYPE,
-  -- Item detail (NULL for uninvoiced visits)
-  it.ITTSTCODE                               AS TEST_CODE,
-  tst.TSTDESC                                AS TEST_DESC,
-  tst.TSTSYSCODE                             AS LAB_TEST_ID,
-  ot.WORKSTATION_ID                          AS LAB_WORKSTATION,
-  ot.CANCELLED_FLAG                          AS LAB_CANCELLED,
-  tr_agg.RESULT_STATE                        AS LAB_RESULT_STATE,
-  it.ITCPTCD                                 AS CPT_CODE,
-  cpt.CPTDESC                                AS CPT_DESC,
-  it.ITPRICE / 100                           AS PRICE_DOLLARS,
-  it.ITUNITS                                 AS UNITS,
-  -- Billing block flags
-  CASE WHEN it.ITCCITINTN IS NOT NULL AND it.ITCCITINTN <> 0
-       THEN 'Y' ELSE 'N' END                AS CCI_FLAGGED,
-  DECODE(it.ITABN, 0,'N', 1,'Y', 2,'U', 3,'P', 4,'R', 5,'W', 6,'X', 7,'S') AS ABN_STATUS,
-  CASE it.ITMODFLAG
-    WHEN 0 THEN 'None'
-    WHEN 1 THEN 'Payable w/ Modifier'
-    ELSE 'Not Allowed'
-  END                                        AS MOD_FLAG,
-  -- Billing errors (visit-level, resolved via V_S_ARE_ARERROR)
-  be.ERROR_CODES,
-  be.ERROR_ACTIONS,
-  be.ERROR_STAGES,
-  be.ERROR_DESCS,
+  -- Error detail (one row per error; NULL when no errors exist)
+  NVL(be.BERCODE, 'IN75')                   AS ERROR_CODE,
+  CASE err.ERRACTION
+    WHEN 0 THEN 'Abort'   WHEN 1 THEN 'Skip'
+    WHEN 2 THEN 'Warning' WHEN 3 THEN 'Ignore'
+    WHEN 4 THEN 'Drop Item' WHEN 5 THEN 'Hold'
+    WHEN 6 THEN 'Split'   WHEN 7 THEN 'Split Warn'
+    WHEN 8 THEN 'Hold & Bill Client'
+  END                                        AS ERROR_ACTION,
+  CASE err.ERRGRP
+    WHEN 0 THEN 'Invoicing' WHEN 1 THEN 'Billing'
+    WHEN 2 THEN 'Other'    WHEN 3 THEN 'Posting'
+    WHEN 4 THEN 'Remittance'
+  END                                        AS ERROR_STAGE,
+  be.BERDESC                                 AS RAW_DESC,
   -- Context
-  it.ITFCLTY                                 AS FACILITY,
+  vt.VTFCLTY                                 AS FACILITY,
   vt.VTWARD                                  AS WARD
 FROM V_P_ARE_VISIT vt
   INNER JOIN V_P_LAB_ORDER lo
@@ -82,21 +64,46 @@ FROM V_P_ARE_VISIT vt
     ON s.AA_ID = lo.STAY_AA_ID
   INNER JOIN V_P_LAB_PATIENT p
     ON p.AA_ID = s.PATIENT_AA_ID
-  LEFT JOIN V_P_ARE_ITEM it
-    ON it.ITVTINTN = vt.VTINTN
-  LEFT JOIN V_P_ARE_INVOICE inv
-    ON inv.INVTINTN = vt.VTINTN
-    AND inv.INEXT = it.ITINEXT
-    AND inv.INSTAT = 0
-  LEFT JOIN V_S_ARE_PAYOR pyo
-    ON pyo.PYOCODE = inv.INBILLTO
-  LEFT JOIN V_S_ARE_TEST tst
-    ON tst.TSTCODE = it.ITTSTCODE
-  LEFT JOIN V_S_ARE_CPTTABLE cpt
-    ON cpt.CPTCODE = it.ITCPTCD
+  LEFT JOIN V_P_ARE_BILLERROR be
+    ON be.BERVTINTN = vt.VTINTN
+  LEFT JOIN V_S_ARE_ARERROR err
+    ON err.ERRCODE = NVL(be.BERCODE, 'IN75')
+WHERE REGEXP_LIKE(p.ID, '^E[0-9]+$')
+  AND vt.VTSRVDT >= TO_DATE(:start_date, 'YYYYMMDD')
+  AND vt.VTSRVDT <  TO_DATE(:end_date, 'YYYYMMDD') + 1
+  AND (
+    vt.VTINVDT IS NULL              -- uninvoiced
+    OR vt.VTFBDT IS NULL            -- invoiced but unbilled
+  )
+ORDER BY vt.VTSRVDT, vt.VTORGORDNUM, be.BERDTM;
+
+----------------------------------------------------------------------
+-- 2. Orders Missing from AR
+--    Lab orders in the date range that have finalized results but
+--    no corresponding AR visit — the order never crossed from
+--    SoftLab into SoftAR.  These will not appear in Query 1.
+----------------------------------------------------------------------
+SELECT
+  lo.ID                                      AS ORDER_NO,
+  p.ID                                       AS MRN,
+  p.LAST_NAME || ', ' || p.FIRST_NAME       AS PATIENT_NAME,
+  lo.ORDERED_DT,
+  lo.PRIORITY,
+  lo.ORDERING_CLINIC_ID                      AS CLINIC,
+  lo.REQUESTING_DOCTOR_ID                    AS DOCTOR,
+  lo.NO_CHARGE,
+  ot.TEST_ID,
+  ot.WORKSTATION_ID,
+  ot.CANCELLED_FLAG,
+  ot.BILL_TYPE,
+  tr_agg.RESULT_STATE
+FROM V_P_LAB_ORDER lo
+  INNER JOIN V_P_LAB_STAY s
+    ON s.AA_ID = lo.STAY_AA_ID
+  INNER JOIN V_P_LAB_PATIENT p
+    ON p.AA_ID = s.PATIENT_AA_ID
   LEFT JOIN V_P_LAB_ORDERED_TEST ot
     ON ot.ORDER_AA_ID = lo.AA_ID
-    AND ot.TEST_ID = tst.TSTSYSCODE
   LEFT JOIN (
     SELECT
       tr.ORDER_AA_ID,
@@ -110,54 +117,43 @@ FROM V_P_ARE_VISIT vt
     ON tr_agg.ORDER_AA_ID = ot.ORDER_AA_ID
     AND tr_agg.GROUP_TEST_ID = ot.TEST_ID
     AND tr_agg.ORDERING_WORKSTATION_ID = ot.WORKSTATION_ID
-  LEFT JOIN (
-    SELECT
-      be0.BERVTINTN,
-      LISTAGG(NVL(be0.BERCODE, 'IN75'), ', ')
-        WITHIN GROUP (ORDER BY be0.BERDTM)           AS ERROR_CODES,
-      LISTAGG(
-        CASE err.ERRACTION
-          WHEN 0 THEN 'Abort'   WHEN 1 THEN 'Skip'
-          WHEN 2 THEN 'Warning' WHEN 3 THEN 'Ignore'
-          WHEN 4 THEN 'Drop Item' WHEN 5 THEN 'Hold'
-          WHEN 6 THEN 'Split'   WHEN 7 THEN 'Split Warn'
-          WHEN 8 THEN 'Hold & Bill Client'
-        END, ', ')
-        WITHIN GROUP (ORDER BY be0.BERDTM)            AS ERROR_ACTIONS,
-      LISTAGG(
-        CASE err.ERRGRP
-          WHEN 0 THEN 'Invoicing' WHEN 1 THEN 'Billing'
-          WHEN 2 THEN 'Other'    WHEN 3 THEN 'Posting'
-          WHEN 4 THEN 'Remittance'
-        END, ', ')
-        WITHIN GROUP (ORDER BY be0.BERDTM)            AS ERROR_STAGES,
-      LISTAGG(be0.BERDESC, ' | ')
-        WITHIN GROUP (ORDER BY be0.BERDTM)            AS ERROR_DESCS
-    FROM V_P_ARE_BILLERROR be0
-      LEFT JOIN V_S_ARE_ARERROR err
-        ON err.ERRCODE = NVL(be0.BERCODE, 'IN75')
-    GROUP BY be0.BERVTINTN
-  ) be ON be.BERVTINTN = vt.VTINTN
 WHERE REGEXP_LIKE(p.ID, '^E[0-9]+$')
-  AND vt.VTSRVDT >= TO_DATE(:start_date, 'YYYYMMDD')
-  AND vt.VTSRVDT <  TO_DATE(:end_date, 'YYYYMMDD') + 1
-  AND (
-    vt.VTINVDT IS NULL              -- uninvoiced
-    OR inv.INFBDT IS NULL           -- invoiced but unbilled
+  AND lo.ORDERED_DT >= TO_DATE(:start_date, 'YYYYMMDD')
+  AND lo.ORDERED_DT <  TO_DATE(:end_date, 'YYYYMMDD') + 1
+  AND NOT EXISTS (
+    SELECT 1 FROM V_P_ARE_VISIT vt
+    WHERE vt.VTORGORDNUM = lo.ID
   )
-ORDER BY vt.VTSRVDT, vt.VTREFNO, it.ITCPTCD;
+  AND EXISTS (
+    SELECT 1 FROM V_P_LAB_TEST_RESULT tr
+    WHERE tr.ORDER_AA_ID = lo.AA_ID
+      AND tr.STATE IN ('Final', 'Corrected')
+      AND tr.RESULT <> '.'
+  )
+ORDER BY lo.ORDERED_DT, lo.ID;
 
 ----------------------------------------------------------------------
--- 2. Summary by Category
+-- 3. Error Distribution Summary
+--    Which error codes are most common across all unbilled visits
+--    in the date range, broken down by action and pipeline stage.
 ----------------------------------------------------------------------
 SELECT
-  CASE
-    WHEN vt.VTINVDT IS NULL THEN 'Uninvoiced'
-    WHEN inv.INFBDT IS NULL THEN 'Invoiced / Unbilled'
-  END                                        AS CATEGORY,
+  NVL(be.BERCODE, 'IN75')                   AS ERROR_CODE,
+  NVL(err.ERRDESC, '(no code match)')       AS ERROR_DESC,
+  CASE err.ERRACTION
+    WHEN 0 THEN 'Abort'   WHEN 1 THEN 'Skip'
+    WHEN 2 THEN 'Warning' WHEN 3 THEN 'Ignore'
+    WHEN 4 THEN 'Drop Item' WHEN 5 THEN 'Hold'
+    WHEN 6 THEN 'Split'   WHEN 7 THEN 'Split Warn'
+    WHEN 8 THEN 'Hold & Bill Client'
+  END                                        AS ERROR_ACTION,
+  CASE err.ERRGRP
+    WHEN 0 THEN 'Invoicing' WHEN 1 THEN 'Billing'
+    WHEN 2 THEN 'Other'    WHEN 3 THEN 'Posting'
+    WHEN 4 THEN 'Remittance'
+  END                                        AS ERROR_STAGE,
   COUNT(DISTINCT vt.VTINTN)                  AS VISIT_COUNT,
-  COUNT(it.ITINTN)                           AS ITEM_COUNT,
-  NVL(SUM(it.ITPRICE), 0) / 100             AS TOTAL_CHARGES,
+  COUNT(*)                                   AS ERROR_COUNT,
   MIN(vt.VTSRVDT)                            AS OLDEST_SERVICE_DT,
   MAX(vt.VTSRVDT)                            AS NEWEST_SERVICE_DT
 FROM V_P_ARE_VISIT vt
@@ -167,22 +163,61 @@ FROM V_P_ARE_VISIT vt
     ON s.AA_ID = lo.STAY_AA_ID
   INNER JOIN V_P_LAB_PATIENT p
     ON p.AA_ID = s.PATIENT_AA_ID
-  LEFT JOIN V_P_ARE_ITEM it
-    ON it.ITVTINTN = vt.VTINTN
-  LEFT JOIN V_P_ARE_INVOICE inv
-    ON inv.INVTINTN = vt.VTINTN
-    AND inv.INEXT = it.ITINEXT
-    AND inv.INSTAT = 0
+  INNER JOIN V_P_ARE_BILLERROR be
+    ON be.BERVTINTN = vt.VTINTN
+  LEFT JOIN V_S_ARE_ARERROR err
+    ON err.ERRCODE = NVL(be.BERCODE, 'IN75')
+WHERE REGEXP_LIKE(p.ID, '^E[0-9]+$')
+  AND vt.VTSRVDT >= TO_DATE(:start_date, 'YYYYMMDD')
+  AND vt.VTSRVDT <  TO_DATE(:end_date, 'YYYYMMDD') + 1
+  AND (vt.VTINVDT IS NULL OR vt.VTFBDT IS NULL)
+GROUP BY
+  NVL(be.BERCODE, 'IN75'),
+  NVL(err.ERRDESC, '(no code match)'),
+  CASE err.ERRACTION
+    WHEN 0 THEN 'Abort'   WHEN 1 THEN 'Skip'
+    WHEN 2 THEN 'Warning' WHEN 3 THEN 'Ignore'
+    WHEN 4 THEN 'Drop Item' WHEN 5 THEN 'Hold'
+    WHEN 6 THEN 'Split'   WHEN 7 THEN 'Split Warn'
+    WHEN 8 THEN 'Hold & Bill Client'
+  END,
+  CASE err.ERRGRP
+    WHEN 0 THEN 'Invoicing' WHEN 1 THEN 'Billing'
+    WHEN 2 THEN 'Other'    WHEN 3 THEN 'Posting'
+    WHEN 4 THEN 'Remittance'
+  END
+ORDER BY VISIT_COUNT DESC;
+
+----------------------------------------------------------------------
+-- 4. Category Summary
+--    High-level counts: uninvoiced vs invoiced/unbilled vs
+--    missing from AR entirely.
+----------------------------------------------------------------------
+SELECT
+  CASE
+    WHEN vt.VTINVDT IS NULL THEN 'Uninvoiced'
+    WHEN vt.VTFBDT IS NULL  THEN 'Invoiced / Unbilled'
+  END                                        AS CATEGORY,
+  COUNT(DISTINCT vt.VTINTN)                  AS VISIT_COUNT,
+  MIN(vt.VTSRVDT)                            AS OLDEST_SERVICE_DT,
+  MAX(vt.VTSRVDT)                            AS NEWEST_SERVICE_DT
+FROM V_P_ARE_VISIT vt
+  INNER JOIN V_P_LAB_ORDER lo
+    ON lo.ID = vt.VTORGORDNUM
+  INNER JOIN V_P_LAB_STAY s
+    ON s.AA_ID = lo.STAY_AA_ID
+  INNER JOIN V_P_LAB_PATIENT p
+    ON p.AA_ID = s.PATIENT_AA_ID
 WHERE REGEXP_LIKE(p.ID, '^E[0-9]+$')
   AND vt.VTSRVDT >= TO_DATE(:start_date, 'YYYYMMDD')
   AND vt.VTSRVDT <  TO_DATE(:end_date, 'YYYYMMDD') + 1
   AND (
     vt.VTINVDT IS NULL
-    OR inv.INFBDT IS NULL
+    OR vt.VTFBDT IS NULL
   )
 GROUP BY
   CASE
     WHEN vt.VTINVDT IS NULL THEN 'Uninvoiced'
-    WHEN inv.INFBDT IS NULL THEN 'Invoiced / Unbilled'
+    WHEN vt.VTFBDT IS NULL  THEN 'Invoiced / Unbilled'
   END
 ORDER BY CATEGORY;
