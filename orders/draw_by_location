@@ -78,7 +78,7 @@ WHERE
     AND Spec.IS_COLLECTED = 'Y'
     AND NVL(Spec.IS_CANCELLED, 'N') = 'N'
     AND ot.CANCELLED_FLAG = 0
-    AND SUBSTR(p.ID, 2, 1) <> 'X'
+    AND REGEXP_LIKE(p.ID, '^E[0-9]+$')
     AND (:ordering_location IS NULL OR :ordering_location = '%' OR s_clinic.ORD_LOCATION_ID LIKE :ordering_location)
 ORDER BY
     Spec.COLLECTION_DT,

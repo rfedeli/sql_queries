@@ -74,6 +74,7 @@ FROM V_P_LAB_PATIENT pt
   INNER JOIN site_list sl ON sl.site_code = bbord.DEPOT
   INNER JOIN V_S_LAB_DOCTOR doc ON doc.ID = o.REQUESTING_DOCTOR_ID
   CROSS JOIN date_params dp
+WHERE REGEXP_LIKE(pt.ID, '^E[0-9]+$')
 GROUP BY
   pt.LAST_NAME,
   pt.FIRST_NAME,

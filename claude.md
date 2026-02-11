@@ -425,6 +425,10 @@ V_S_ARE_BILLRULES.BRTSTCODE → V_S_ARE_TEST.TSTCODE
 V_S_ARE_BILLRULES.BRCPTCODE → V_S_ARE_CPTTABLE.CPTCODE
 V_S_ARE_BILLRULES.BRPYOCODE → V_S_ARE_PAYOR (payor-specific billing rules)
 V_S_ARE_BILLRULES.BRCCIMOD → V_S_ARE_MODIFIER.MODCODE (configured CCI override modifier)
+
+V_P_ARE_VISIT.VTORGORDNUM → V_P_LAB_ORDER.ID  (cross-links AR visit to SoftLab order)
+V_P_ARE_BILLERROR.BERVTINTN → V_P_ARE_VISIT.VTINTN  (billing errors are visit-level)
+V_P_ARE_BILLERROR.BERCODE → V_S_ARE_ARERROR.ERRCODE  (error definition lookup; use NVL(BERCODE,'IN75'))
 ```
 
 ### V_P_ARE_VISIT — Visit data
@@ -582,7 +586,7 @@ V_S_ARE_BILLRULES.BRCCIMOD → V_S_ARE_MODIFIER.MODCODE (configured CCI override
 | BRPYOCODE | VARCHAR2 15 | Payor code (rules are payor-specific) |
 | BRBILCLASS | VARCHAR2 5 | Billing class |
 | BRPTTYPE | VARCHAR2 1 | Patient type |
-| BRNOBILL | NUMBER | No bill flag |
+| BRNOBILL | NUMBER | No bill flag: 0=normal (bill CPT), 1=Free, 2=Split to Components, 3=Bill to PRIV, 4=Bill to Secondary, 5=Bill to Ward, 6=Bill to Specified |
 | BRSPLIT | NUMBER | Split flag |
 | BRCPTCODE | VARCHAR2 11 | CPT/HCPCS code |
 | BRMODCODE0 | VARCHAR2 5 | Default modifier 0 |
@@ -618,11 +622,11 @@ V_S_ARE_BILLRULES.BRCCIMOD → V_S_ARE_MODIFIER.MODCODE (configured CCI override
 | ITSYSCODE | VARCHAR2 5 | System code |
 | ITSRVDT | DATE | Service date (from) |
 | ITSRVDTTO | DATE | Service date (to) |
-| ITPRICE | NUMBER | Price |
+| ITPRICE | NUMBER | Price (stored in cents — divide by 100 for dollars) |
 | ITTAXAMT | NUMBER | Tax amount |
 | ITGROSS | NUMBER | Gross amount |
 | ITACCAMT | NUMBER | Account amount |
-| ITBAL | NUMBER | Balance |
+| ITBAL | NUMBER | Balance (stored in cents — divide by 100 for dollars) |
 | ITUNITS | NUMBER | Units |
 | ITVTINTN | NUMBER | FK → Visit internal number |
 | ITPTINTN | NUMBER | FK → Patient internal number |
@@ -648,9 +652,9 @@ V_S_ARE_BILLRULES.BRCCIMOD → V_S_ARE_MODIFIER.MODCODE (configured CCI override
 | ITDESC | VARCHAR2 79 | Item description |
 | ITFREQSTAT | NUMBER | Frequency limit status (0=ok; non-zero=flagged — always 0 in practice) |
 | ITMEDNECSTAT | NUMBER | Medical necessity status (0=ok; non-zero=flagged — always 0 in practice) |
-| ITABN | NUMBER | ABN status (0=ok, 2=ABN flagged — concentrated on micro tests) |
-| ITCCITINTN | NUMBER | FK → V_S_ARE_CCI.CCINTN (system-flagged CCI edit) |
-| ITMODFLAG | NUMBER | Modifier flag |
+| ITABN | NUMBER | ABN status: 0=N(ok), 1=Y, 2=U(unknown), 3=P, 4=R, 5=W, 6=X, 7=S |
+| ITCCITINTN | NUMBER | CCI link — points to the column-1 (grouped) item's ITINTN, NOT to V_S_ARE_CCI.CCINTN. When populated and <> 0, this item is the subordinate (column 2) in a CCI pair. |
+| ITMODFLAG | NUMBER | Modifier flag: 0=none, 1=payable with modifier (CCI override allowed), >1=not allowed |
 | ITBQNT | NUMBER | Billed quantity |
 | ITUNITPRICE | NUMBER | Unit price |
 | ITNCREASON | NUMBER | No charge reason |
@@ -689,11 +693,157 @@ V_S_ARE_BILLRULES.BRCCIMOD → V_S_ARE_MODIFIER.MODCODE (configured CCI override
 **Notes:**
 - BILLERROR is visit-level, not item-level. Join on `BERVTINTN → VTINTN`.
 - There is no item-level FK (no `BEITINTN` column).
-- `BERCODE` and `BEORDER` are typically empty — `BERDESC` carries the error detail.
+- `BERCODE` and `BEORDER` are typically empty — `BERDESC` carries the error detail. Use `BERDESC` for raw error text.
 - `BERDTM` date generally matches the visit service date (`VTSRVDT`).
 - Most billing errors are non-blocking warnings — ~267K visits with errors still got invoiced and billed.
 - Uninvoiced visits (`VTINVDT IS NULL`) have **zero items** in `V_P_ARE_ITEM` — they are visit shells only.
 - Common error categories on uninvoiced visits: invoice-when restriction (components not yet resulted), review needed, auto-split leftovers, invalid/missing payor, frequency limit, workstation-facility mismatch.
+- When `BERCODE` is NULL, SCC treats it as error code `'IN75'` (not billed/invoiced) — look up in `V_S_ARE_ARERROR`.
+- Do NOT pre-filter errors by `ERRACTION` — even Warning-level errors can block bill delivery. Show all errors and let the user assess.
+
+### V_S_ARE_ARERROR — AR error code definitions
+
+| Column | Type | Description |
+|--------|------|-------------|
+| ERRCODE | VARCHAR2 5 | Error code (PK — e.g., 'IN75') |
+| ERRDESC | VARCHAR2 | Error description |
+| ERRACTION | NUMBER | Action: 0=Abort, 1=Skip, 2=Warning, 3=Ignore, 4=Drop Item, 5=Hold, 6=Split, 7=Split Warn, 8=Hold And Bill Client |
+| ERRCORCODE | VARCHAR2 | Corrective action code |
+| ERRGRP | NUMBER | Error group: 0=Invoicing, 1=Billing, 2=Other, 3=Posting, 4=Remittance |
+
+**Notes:**
+- This is the lookup table for `V_P_ARE_BILLERROR.BERCODE`. Join: `err.ERRCODE = NVL(be.BERCODE, 'IN75')`.
+- `ERRACTION` nominal severity: 0=Abort, 1=Skip, 4=Drop Item, 5=Hold, 6=Split, 8=Hold & Bill Client are formally blocking; 2=Warning and 7=Split Warn are nominally non-blocking but **can still prevent bill delivery** at the Billing stage (e.g., STXER/Warning at Billing blocked bill generation in practice).
+- `ERRGRP` identifies which pipeline stage raised the error: 0=Invoicing, 1=Billing, 2=Other, 3=Posting, 4=Remittance.
+- Default error `'IN75'` is applied when `BERCODE` is NULL (visit never invoiced/billed).
+- Common unbilled patterns discovered: NOMOD/Skip at Billing (missing CCI modifier — invoiced, not billed), IN24/Skip at Invoicing (payor criteria unmet — not invoiced), STXER/Warning at Billing (patient data syntax error — invoiced, not billed), or no AR visit at all (order never crossed from SoftLab to SoftAR).
+
+### V_P_ARE_INVOICE — Invoice data
+
+| Column | Type | Description |
+|--------|------|-------------|
+| ININTN | NUMBER | PK — internal number |
+| INVTINTN | NUMBER | FK → V_P_ARE_VISIT.VTINTN |
+| INEXT | NUMBER | Insurance extension (matches ITINEXT — links invoice to item) |
+| INSTAT | NUMBER | Status: 0=active (`INV_ACTIVE`), non-zero=inactive |
+| INLBDT | DATE | Last bill date (NULL = not yet billed) |
+| INFBDT | DATE | First bill date |
+| INBILLTO | VARCHAR2 | Bill-to payor code (FK → V_S_ARE_PAYOR.PYOCODE) |
+| INCHARGE | NUMBER | Charge amount (stored in cents — divide by 100 for dollars) |
+| INDUEAMT | NUMBER | Due/balance amount (stored in cents — divide by 100 for dollars) |
+| INSTBILNO | VARCHAR2 | Stay billing number |
+
+**Notes:**
+- Join to items via `INVTINTN = ITVTINTN AND INEXT = ITINEXT`.
+- `INSTAT = 0` means the invoice is active (comment in SCC code: `INV_ACTIVE`).
+- All monetary columns stored in cents.
+
+### V_P_ARE_TRANS — Transaction data
+
+| Column | Type | Description |
+|--------|------|-------------|
+| TRINTN | NUMBER | PK — internal number |
+| TRVTINTN | NUMBER | FK → V_P_ARE_VISIT.VTINTN (NULL for account-level transactions) |
+| TRACINTN | NUMBER | FK → V_P_ARE_ACCOUNT.ACINTN |
+| TRINEXT | NUMBER | Insurance extension (matches ITINEXT) |
+| TRTTCODE | VARCHAR2 | Transaction type code (FK → V_S_ARE_TRTYPE.TTCODE; e.g., 'INV') |
+| TRPYOCODE | VARCHAR2 | Payor code |
+| TRAMT | NUMBER | Transaction amount (stored in cents — divide by 100 for dollars) |
+| TRSTAT | NUMBER | Status: 2=posted, other=not posted |
+| TRDT | DATE | Transaction date |
+| TRPOSTDTM | DATE | Posted date/time (NULL = not posted) |
+| TRBTINTN | NUMBER | FK → Batch internal number (FK → V_P_ARE_JOBS.JBBTINTN) |
+| TRTYPE | NUMBER | Transaction type (2=distribution — excluded in some reports) |
+| TRBLKTRINTN | NUMBER | FK → linked/block transaction TRINTN |
+| TRCMPTRINTN | NUMBER | Companion transaction TRINTN |
+| TRCREATDTM | DATE | Created date/time |
+| TRCREATBY | VARCHAR2 16 | Created by user |
+
+**Notes:**
+- Join to items via `TRVTINTN = ITVTINTN AND TRINEXT = ITINEXT`.
+- `TRTTCODE = 'INV'` identifies invoicing transactions.
+- `TRVTINTN IS NULL` indicates account-level transactions (no visit link).
+- All monetary columns stored in cents.
+
+### V_S_ARE_TRTYPE — Transaction type setup
+
+| Column | Type | Description |
+|--------|------|-------------|
+| TTINTN | NUMBER | PK — internal number |
+| TTCODE | VARCHAR2 | Transaction type code (e.g., 'INV', 'PMT', 'ADJ') |
+| TTKIND | NUMBER | Kind: 0=Charge, 1=Payment, 2=Adjustment, 3=Action |
+| TTWROFF | NUMBER | Write-off flag: 1=write-off transaction, NULL or other=not |
+| TTTYPE | NUMBER | Type (used in billing-per-day: 2=positive units, 21=negative units) |
+
+**Notes:**
+- Join to transactions via `TRTTCODE = TTCODE`.
+- `TTKIND` is the primary classification for reporting (charges vs payments vs adjustments).
+
+### V_S_ARE_PAYOR — Payor setup
+
+| Column | Type | Description |
+|--------|------|-------------|
+| PYOINTN | NUMBER | PK — internal number |
+| PYOCODE | VARCHAR2 15 | Payor code |
+| PYOCLASS | VARCHAR2 | Payor class (billing classification) |
+| PYOTYPE | NUMBER | Payor type: 0=Insurance, 1=Client, 2=Self-Pay, 3=Collection, 4=Undetermined |
+| PYOSTAT | NUMBER | Status (0 = active) |
+
+### V_P_ARE_PERSON — AR patient demographics
+
+| Column | Type | Description |
+|--------|------|-------------|
+| PTINTN | NUMBER | PK — internal number |
+| PTMRN | VARCHAR2 | Medical record number |
+| PTLNAME | VARCHAR2 | Last name |
+| PTFNAME | VARCHAR2 | First name |
+| PTMNAME | VARCHAR2 | Middle name |
+| PTDOB | DATE | Date of birth |
+
+**Notes:**
+- This is the SoftAR patient view (separate from V_P_LAB_PATIENT).
+- Join to visit via `PTINTN = VTPTINTN`.
+
+### V_P_ARE_ACCOUNT — Account data
+
+| Column | Type | Description |
+|--------|------|-------------|
+| ACINTN | NUMBER | PK — internal number |
+| ACPTINTN | NUMBER | FK → V_P_ARE_PERSON.PTINTN |
+| ACCLTINTN | NUMBER | FK → V_S_ARE_CLIENT.CLTINTN |
+| ACTYPE | NUMBER | Account type: 1=Client, other=Non-Client |
+
+**Notes:**
+- Join to visit via `ACINTN = VTACINTN`.
+- `ACTYPE = 1` identifies client (outreach) accounts.
+
+### V_P_ARE_STAY — AR stay data
+
+| Column | Type | Description |
+|--------|------|-------------|
+| STINTN | NUMBER | PK — internal number |
+| STBILNO | VARCHAR2 | Stay billing number |
+| STWARD | VARCHAR2 | Ward code |
+
+**Notes:**
+- Join to visit via `STINTN = VTSTINTN`.
+- Separate from V_P_LAB_STAY (SoftLab).
+
+### SCC SoftAR Built-in Functions (reference only)
+
+| Function | Description |
+|----------|-------------|
+| `ARE_GetVisitProceduresList(VTINTN)` | Returns concatenated order#/test list for a visit |
+| `ARE_GetItemDoc(ITINTN, field)` | Returns doctor code for an item (e.g., `'vprreqdccode'` for requesting doctor) |
+| `ARE_GetCollectionTime(ITINTN)` | Returns collection time for an item |
+| `DiffSysMod(mod0-3, mod0-3)` | Compares two sets of 4 modifiers; returns 0 if identical |
+| `GetPmtPayors(ININTN)` | Returns payment payor list for an invoice |
+| `GetSysDate()` | Returns current system date (SCC wrapper around SYSDATE) |
+| `parsephone(phone)` | Formats a phone number for display |
+| `EmptyToChar(value)` | Returns NULL if value is empty (parameter helper) |
+| `AdjustDate(value)` | Converts parameter value to DATE |
+
+**Note:** These are SCC server-side PL/SQL functions available in the SoftAR schema. They work in SCC's report engine but may not be callable from external connections.
 
 ---
 
