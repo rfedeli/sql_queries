@@ -21,13 +21,16 @@ Columns:
   - TEST_ID: Test code
   - ORDERING_CLINIC: Clinic/ward where test was ordered
   - PERFORMING_LOCATION: Location where test was performed
+  - TESTING_WORKSTATION: Instrument/workstation that ran the test
   - ORDERED_DT: When test was ordered
   - COLLECTED_DT: When specimen was collected
   - RECEIVED_DT: When specimen was received in lab
+  - TESTED_DT: When instrument ran the test
   - VERIFIED_DT: When result was verified
   - ORDER_TO_COLLECT_MIN: Minutes from order to collection
   - COLLECT_TO_RECEIVE_MIN: Minutes from collection to lab receipt
-  - RECEIVE_TO_VERIFY_MIN: Minutes from receipt to verification
+  - RECEIVE_TO_TEST_MIN: Minutes from receipt to instrument run
+  - TEST_TO_VERIFY_MIN: Minutes from instrument run to verification
   - TOTAL_TAT_MIN: Total minutes from order to verification
 */
 
@@ -38,13 +41,16 @@ SELECT
   tr.TEST_ID,
   ot.CLINIC_ID AS ORDERING_CLINIC,
   tr.TEST_PERFORMING_LOCATION AS PERFORMING_LOCATION,
+  tr.TESTING_WORKSTATION_ID AS TESTING_WORKSTATION,
   TO_CHAR(ot.ORDERING_DT, 'YYYYMMDD') AS ORDERED_DT,
   TO_CHAR(tr.COLLECT_DT, 'YYYYMMDD') AS COLLECTED_DT,
   TO_CHAR(tr.RECEIVE_DT, 'YYYYMMDD') AS RECEIVED_DT,
+  TO_CHAR(tr.TEST_DT, 'YYYYMMDD') AS TESTED_DT,
   TO_CHAR(tr.VERIFIED_DT, 'YYYYMMDD') AS VERIFIED_DT,
   ROUND((tr.COLLECT_DT - ot.ORDERING_DT) * 1440, 2) AS ORDER_TO_COLLECT_MIN,
   ROUND((tr.RECEIVE_DT - tr.COLLECT_DT) * 1440, 2) AS COLLECT_TO_RECEIVE_MIN,
-  ROUND((tr.VERIFIED_DT - tr.RECEIVE_DT) * 1440, 2) AS RECEIVE_TO_VERIFY_MIN,
+  ROUND((tr.TEST_DT - tr.RECEIVE_DT) * 1440, 2) AS RECEIVE_TO_TEST_MIN,
+  ROUND((tr.VERIFIED_DT - tr.TEST_DT) * 1440, 2) AS TEST_TO_VERIFY_MIN,
   ROUND((tr.VERIFIED_DT - ot.ORDERING_DT) * 1440, 2) AS TOTAL_TAT_MIN
 FROM V_P_LAB_TEST_RESULT tr
 JOIN V_P_LAB_ORDER o ON o.AA_ID = tr.ORDER_AA_ID
