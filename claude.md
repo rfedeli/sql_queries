@@ -195,6 +195,24 @@ V_P_BB_Result links to V_P_BB_Test via:
 | PERFORMING_LAB | VARCHAR2 1 | Flag: resulted at reference lab (Y/N) |
 | REFERENCE_LAB_ID | VARCHAR2 20 | Reference lab ID |
 
+**Instrument TAT Analysis Note:** For analyzer/instrument turn-around time, use `TEST_DT` (when instrument ran the test) in combination with `RECEIVE_DT` and `VERIFIED_DT`:
+- `RECEIVE_DT` → `TEST_DT` = Time waiting for instrument
+- `TEST_DT` → `VERIFIED_DT` = Time from instrument run to verification
+- `TESTING_WORKSTATION_ID` identifies which analyzer/instrument ran the test
+
+### V_P_LAB_PENDING_RESULT — Pending test results
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 22 | PK |
+| TEST_ID | VARCHAR2 5 | Test ID |
+| SPEC_COLLECTED | VARCHAR2 1 | Specimen collected flag (Y/N) |
+| SPEC_RECEIVED | VARCHAR2 1 | Specimen received flag (Y/N) |
+| ORDER_AA_ID | NUMBER 22 | FK → V_P_LAB_ORDER.AA_ID |
+| TO_BE_COLLECT_DT | DATE | Scheduled collection date/time |
+
+**Note:** This view is for tracking pending/scheduled specimen collections, not finalized results.
+
 ### V_P_LAB_SPECIMEN — Specimen data
 
 | Column | Type | Description |
@@ -852,6 +870,7 @@ V_P_ARE_BILLERROR.BERCODE → V_S_ARE_ARERROR.ERRCODE  (error definition lookup;
 | View | Notes |
 |------|-------|
 | V_P_IDN_LOG | Used in `draw_by_location` query. Columns: PATIENT_ID, SPECIMEN_ID, PHLEB_ID, ROLE_ID, DEVICE_ID, TERMINAL_ID, LOG_DT, EVENT, MESSAGE. Likely an ID/barcode scanning event log — not documented in the provided SCC dictionaries. |
+| V_P_GCM_OTESTRESULT | GCM (likely General Communication Module) test results table with columns GP_OTR_*. Appears to be for Cytogenetics/Pathology results based on column names (KTYPE, KARYOTYPE, ABNCH, METACELLS, INTERCELLS, etc.). Table exists but is **empty in production** — not useful for standard lab TAT queries. Use V_P_LAB_TEST_RESULT instead. |
 
 ---
 
