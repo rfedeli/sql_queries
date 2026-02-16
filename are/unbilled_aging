@@ -1,0 +1,62 @@
+-- Unbilled Aging — Items with service date > 5 days before reference date
+-- Shows visits still stuck in the billing pipeline (uninvoiced or unbilled)
+-- where the service date is more than 5 days old relative to :reference_date.
+--
+-- Source views: V_P_ARE_VISIT, V_P_ARE_ITEM, V_P_LAB_ORDER, V_P_LAB_STAY,
+--               V_P_LAB_PATIENT, V_S_ARE_TEST
+-- Parameters:
+--   :start_date  YYYYMMDD  service date range start (inclusive)
+--   :end_date    YYYYMMDD  service date range end (inclusive)
+--   Items within range that are still unbilled after 5+ days from service date.
+
+SELECT
+  vt.VTORGORDNUM                             AS ACCESSION_NO,
+  vt.VTREFNO                                 AS INVOICE_NO,
+  vt.VTSRVDT                                 AS SERVICE_DT,
+  TRUNC(SYSDATE) - TRUNC(vt.VTSRVDT)        AS DAYS_AGING,
+  CASE WHEN vt.VTSTAT = 3      THEN 'Cancelled'
+       WHEN vt.VTINVDT IS NULL THEN 'Uninvoiced'
+       WHEN vt.VTFBDT IS NULL  THEN 'Invoiced / Unbilled'
+       ELSE 'Billed'
+  END                                        AS PIPELINE_STATUS,
+  it.ITTSTCODE                               AS TEST_CODE,
+  tst.TSTDESC                                AS TEST_DESC,
+  it.ITCPTCD                                 AS CPT_CODE,
+  CASE it.ITSTAT
+    WHEN 0 THEN 'Active'
+    ELSE 'Cancelled'
+  END                                        AS ITEM_STATUS,
+  CASE vt.VTSTAT
+    WHEN 0 THEN 'Pending'
+    WHEN 1 THEN 'Active'
+    WHEN 2 THEN 'Held'
+    WHEN 3 THEN 'Cancelled'
+    WHEN 4 THEN 'Other'
+  END                                        AS VISIT_STATUS,
+  CASE vt.VTREADY
+    WHEN 0 THEN 'Ready'
+    WHEN 1 THEN 'Not Ready'
+  END                                        AS READY_STATUS,
+  vt.VTFCLTY                                 AS FACILITY,
+  vt.VTWARD                                  AS WARD
+FROM V_P_ARE_VISIT vt
+  INNER JOIN V_P_LAB_ORDER lo
+    ON lo.ID = vt.VTORGORDNUM
+  INNER JOIN V_P_LAB_STAY s
+    ON s.AA_ID = lo.STAY_AA_ID
+  INNER JOIN V_P_LAB_PATIENT p
+    ON p.AA_ID = s.PATIENT_AA_ID
+  LEFT JOIN V_P_ARE_ITEM it
+    ON it.ITVTINTN = vt.VTINTN
+  LEFT JOIN V_S_ARE_TEST tst
+    ON tst.TSTCODE = it.ITTSTCODE
+WHERE REGEXP_LIKE(p.ID, '^E[0-9]+$')
+  AND vt.VTSRVDT >= TO_DATE(:start_date, 'YYYYMMDD')
+  AND vt.VTSRVDT <  TO_DATE(:end_date, 'YYYYMMDD') + 1
+  AND TRUNC(SYSDATE) - TRUNC(vt.VTSRVDT) > 5
+  AND (
+    vt.VTINVDT IS NULL
+    OR vt.VTFBDT IS NULL
+    OR vt.VTSTAT = 3
+  )
+ORDER BY DAYS_AGING DESC, vt.VTORGORDNUM, it.ITTSTCODE;
