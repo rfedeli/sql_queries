@@ -79,6 +79,39 @@ V_P_BB_Result links to V_P_BB_Test via:
 
 ---
 
+## Collection Location Codes
+
+Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follow a structured naming pattern:
+
+### Facility Prefixes
+| Code | Facility |
+|------|----------|
+| T | Temple University Hospital |
+| J | Jeanes Hospital |
+| C | Chestnut Hill Hospital |
+| E | Episcopal Hospital |
+| F | Fox Chase Cancer Center |
+| W | Women and Families Hospital |
+| N | (Unknown facility) |
+
+### Location Suffixes
+| Code | Meaning |
+|------|---------|
+| 1 | Inpatient |
+| 2 | Outpatient |
+| 4 | (TBD - user will provide later) |
+
+### Common Collection Locations
+- **T1, T2, T4** — Temple (inpatient, outpatient, other)
+- **J1, J2** — Jeanes (inpatient, outpatient)
+- **C1, C2** — Chestnut Hill (inpatient, outpatient)
+- **E1** — Episcopal (inpatient)
+- **F1, F2** — Fox Chase (inpatient, outpatient)
+- **W1, W2** — Women and Families (inpatient, outpatient)
+- **N1** — Unknown facility (inpatient)
+
+---
+
 ## Frequently Used Views — Full Column Detail
 
 ### V_P_LAB_PATIENT — Patient data
@@ -311,6 +344,50 @@ V_P_BB_Result links to V_P_BB_Test via:
 | ACTIVE | VARCHAR2 1 | Active flag (Y/N) |
 | TYPE | VARCHAR2 3 | Type: G=DoctorGroup, I=Institution, N=Non staff, S=Staff, T=Temporary |
 | SECONDARY_ID | VARCHAR2 15 | Secondary ID |
+
+### V_S_LAB_LOCATION — Location definition
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 22 | PK |
+| ID | VARCHAR2 7 | Location code |
+| NAME | VARCHAR2 60 | Location name |
+| DESCRIPTION | VARCHAR2 236 | Location description |
+| STREET1 | VARCHAR2 64 | Address line 1 |
+| STREET2 | VARCHAR2 64 | Address line 2 |
+| CITY | VARCHAR2 40 | City |
+| STATE | VARCHAR2 3 | State |
+| ZIP | VARCHAR2 11 | Zip code |
+| PHONE | VARCHAR2 20 | Phone number |
+| FAX | VARCHAR2 20 | Fax number |
+| CLIA | VARCHAR2 11 | CLIA number |
+| SITE | VARCHAR2 5 | Site code |
+| CONTACT | VARCHAR2 47 | Contact name |
+| REF_LAB | NUMBER 22 | Reference lab flag |
+| REF_ACCOUNT | VARCHAR2 32 | Reference account |
+| REF_NOTINTERFACED | NUMBER 22 | Not interfaced flag |
+| SENDING_APP | VARCHAR2 20 | Sending application |
+| SENDING_FACITILY | VARCHAR2 20 | Sending facility (note: misspelled in database) |
+| RECEIVING_APP | VARCHAR2 20 | Receiving application |
+| RECEIVING_FACILITY | VARCHAR2 20 | Receiving facility |
+| TRANS_FORMAT | VARCHAR2 0 | Transmission format |
+| REF_DIALCOM | NUMBER 0 | Reference dialcom |
+| IS_FIL | NUMBER 0 | Is file flag |
+| PERFORMING_LAB_ID | VARCHAR2 20 | Performing lab ID |
+| INTERP_MAN_RES | VARCHAR2 1 | Interpretation manual result flag |
+| ADDRTYPE | NUMBER 3 | Address type |
+| NAMETYPE | CHAR 1 | Name type |
+| COUNTY | VARCHAR2 30 | County |
+| COUNTRY | VARCHAR2 30 | Country |
+| TELCOM | VARCHAR2 80 | Telecom |
+| TELTYPE | VARCHAR2 3 | Telephone type |
+| FAXCOM | VARCHAR2 80 | Fax communication |
+| NAMEAA | VARCHAR2 20 | Name AA |
+| SENDFAC | VARCHAR2 20 | Send facility |
+| MD | VARCHAR2 15 | MD code |
+| DEPOT | NUMBER 0 | Depot |
+
+**Note:** This view does NOT have an ACTIVE or TYPE column. SENDING_FACITILY is intentionally misspelled in the database (should be SENDING_FACILITY).
 
 ---
 
