@@ -1,0 +1,16 @@
+/*
+Diagnostic query to see what data exists in V_P_GCM_OTESTRESULT
+*/
+
+-- Check a sample of data
+SELECT
+  GP_OTR_ORDNUM,
+  GP_OTR_INSTWKS,
+  GP_OTR_FROMINSTR,
+  GP_OTR_DATE,
+  GP_OTR_MDATE,
+  GP_OTR_TESTID,
+  GP_OTR_PATID
+FROM V_P_GCM_OTESTRESULT
+WHERE ROWNUM <= 100
+ORDER BY GP_OTR_DATE DESC NULLS LAST;
