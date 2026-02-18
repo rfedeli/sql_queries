@@ -19,19 +19,23 @@ SELECT
     MAX(tr.STATE) AS result_state,
 
     -- Ordering Location
-    o.ORDERING_CLINIC_ID AS ordering_clinic_id,
+    o.ORDERING_CLINIC_ID,
+    o.COLLECT_CENTER_ID,
 
     -- Collection Info
+    MAX(spec.COLLECTION_LOCATION) AS collection_location,
     MAX(spec.COLLECTION_DT) AS collection_dt,
 
     -- Performing Location Info
     MAX(tr.TEST_PERFORMING_LOCATION) AS test_performing_location,
     MAX(perf_loc.NAME) AS performing_location_name,
     MAX(tr.TEST_PERFORMING_DEPT) AS test_performing_dept,
-    MAX(tr.PERFORMING_LAB) AS performing_lab,
 
     -- Reference Lab Info (if sent out)
     MAX(tr.REFERENCE_LAB_ID) AS reference_lab_id,
+
+    -- Transit Tracking
+    MAX(CASE WHEN tl.STATUS_DESCRIPTION = 'Transit' THEN 'Y' ELSE 'N' END) AS went_into_transit,
 
     -- Dates
     MIN(tr.RECEIVE_DT) AS receive_dt
@@ -49,6 +53,12 @@ JOIN V_P_LAB_PATIENT p ON s.PATIENT_AA_ID = p.AA_ID
 LEFT JOIN V_P_LAB_SPECIMEN spec ON spec.PATIENT_AA_ID = p.AA_ID
     AND spec.COLLECTION_DT BETWEEN o.ORDERED_DT - 1 AND o.ORDERED_DT + 1
 
+-- Join to tube for tracking
+LEFT JOIN V_P_LAB_TUBE t ON t.ORDER_AA_ID = o.AA_ID
+
+-- Join to tube location tracking
+LEFT JOIN V_P_LAB_TUBE_LOCATION tl ON tl.TUBE_AA_ID = t.AA_ID
+
 -- Location lookups
 LEFT JOIN V_S_LAB_LOCATION perf_loc ON tr.TEST_PERFORMING_LOCATION = perf_loc.ID
 
@@ -56,8 +66,8 @@ WHERE
     -- Only real patients
     REGEXP_LIKE(p.ID, '^E[0-9]+$')
 
-    -- Ordered from Women and Families Hospital (W1 or W2)
-    AND o.ORDERING_CLINIC_ID IN ('W1', 'W2')
+    -- Collected at Women and Families Hospital (W1 or W2)
+    AND spec.COLLECTION_LOCATION IN ('W1', 'W2')
 
     -- NOT performed at WFH (exclude WFH from performing location)
     AND tr.TEST_PERFORMING_LOCATION NOT IN ('WFH')
@@ -74,6 +84,7 @@ GROUP BY
     o.ORDERED_DT,
     p.ID,
     o.ORDERING_CLINIC_ID,
+    o.COLLECT_CENTER_ID,
     tr.GROUP_TEST_ID
 
 ORDER BY
@@ -81,9 +92,9 @@ ORDER BY
     o.ID
 
 -- Notes:
--- 1. Shows orders placed from WFH (W1, W2) but performed elsewhere
--- 2. TEST_PERFORMING_LOCATION uses different codes than ORDERING_CLINIC_ID
---    - Ordering clinic: W1, W2 (inpatient, outpatient)
+-- 1. Shows specimens collected at WFH (W1, W2) but performed elsewhere
+-- 2. TEST_PERFORMING_LOCATION uses different codes than COLLECTION_LOCATION
+--    - Collection uses: W1, W2 (inpatient, outpatient)
 --    - Performing uses: WFH (facility code)
 -- 3. Aggregated by order and GROUP_TEST_ID to reduce duplication (panels show as 1 row)
 -- 4. PERFORMING_LAB = 'Y' means it was sent to an external reference lab

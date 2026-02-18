@@ -314,6 +314,25 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 | CODE_TYPE | CHAR 1 | Type: S=Specimen id, B=Barcode, O=Order number |
 | RECORDING_DT | DATE | Date/time recorded |
 
+### V_P_LAB_TUBE_LOCATION — Specimen tracking history
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 14 | PK |
+| TUBE_AA_ID | NUMBER 14 | FK → V_P_LAB_TUBE.AA_ID |
+| STATUS_DESCRIPTION | VARCHAR2 50 | Status: Collected, Transit, Run on Instrument, Resulted, Ordering |
+| ARRIVED_DT | DATE | Arrived date/time (timestamp for this tracking event) |
+| REGISTERED_BY | VARCHAR2 16 | Tech who performed the action |
+| COMMENT_TEXT | VARCHAR2 | Location/tech info (e.g., "R: TIMM by TSB at 02/18/2026 11:05") |
+| DEPOT | VARCHAR2 | Facility code (T1, J1, etc.) |
+| TYPE_DESCRIPTION | VARCHAR2 | Tube type description |
+| TRAY_ID | VARCHAR2 20 | Automation tray ID |
+| CARRIER_ID | VARCHAR2 20 | Automation carrier ID |
+| LINE_CODE | VARCHAR2 10 | Automation line code |
+| OUTLET_CODE | VARCHAR2 10 | Automation outlet code |
+
+**Note:** This table tracks specimen location events including collection, transit between facilities, instrument processing, and final results. The STATUS_DESCRIPTION field is key for identifying transit events (specimens physically moved between locations).
+
 ### V_S_LAB_CLINIC — Clinic / ordering location setup
 
 | Column | Type | Description |
