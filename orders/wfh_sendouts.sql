@@ -2,8 +2,6 @@
 -- Shows WFH specimens that were performed or sent out ELSEWHERE (not at WFH)
 -- Aggregated by order and GROUP_TEST_ID to reduce duplication
 -- Oracle 19c compatible
-
--- *** ADJUST DATE RANGE HERE ***
 -- Format: YYYYMMDD
 
 SELECT
@@ -97,5 +95,4 @@ ORDER BY
 --    - Collection uses: W1, W2 (inpatient, outpatient)
 --    - Performing uses: WFH (facility code)
 -- 3. Aggregated by order and GROUP_TEST_ID to reduce duplication (panels show as 1 row)
--- 4. PERFORMING_LAB = 'Y' means it was sent to an external reference lab
 -- 5. receive_dt shows first time specimen was received in lab
