@@ -1,0 +1,173 @@
+WITH parsed_date AS (SELECT To_Date(:StartDate, 'YYYYMMDD') AS raw_date,
+      Trunc(To_Date(:StartDate, 'YYYYMMDD'), 'mm') AS start_month
+    FROM dual),
+  month_series AS (SELECT Add_Months(pd.start_month, -11 + (Level -
+      1)) AS month_date,
+      To_Char(Add_Months(pd.start_month, -11 + (Level - 1)), 'Mon YYYY') AS
+      month_label,
+      To_Char(Add_Months(pd.start_month, -11 + (Level - 1)), 'YYYYMM')
+      AS month_num,
+      Level AS month_pos
+    FROM parsed_date pd
+    CONNECT BY Level <= 12),
+  all_sites AS (SELECT DISTINCT Coalesce(Upper(V_S_LAB_COLL_CENTER.SITE),
+      '(No site)') AS SITE
+    FROM V_S_LAB_COLL_CENTER),
+  site_data AS (SELECT Coalesce(Upper(sLCoC.SITE), '(No site)') AS SITE,
+      Trunc(pLOrd.ORDERED_DT, 'mm') AS order_month,
+      Count(DISTINCT pLOrd.AA_ID) AS cnt_by_site
+    FROM V_S_LAB_COLL_CENTER sLCoC
+      LEFT JOIN V_P_LAB_ORDER pLOrd ON sLCoC.ID = pLOrd.COLLECT_CENTER_ID,
+      parsed_date pd
+    WHERE (pLOrd.ORDERED_DT IS NULL) OR
+      (Trunc(pLOrd.ORDERED_DT, 'mm') BETWEEN Add_Months(pd.start_month,
+        -11) AND pd.start_month)
+    GROUP BY Coalesce(Upper(sLCoC.SITE), '(No site)'),
+      Trunc(pLOrd.ORDERED_DT, 'mm')),
+  site_month_matrix AS (SELECT asites.SITE,
+      ms.month_date,
+      ms.month_label,
+      ms.month_num,
+      ms.month_pos,
+      NVL(sd.cnt_by_site, 0) AS cnt_by_site
+    FROM all_sites asites
+      LEFT JOIN site_data sd ON asites.SITE = sd.SITE
+      LEFT JOIN month_series ms ON Trunc(sd.order_month, 'mm') = ms.month_date),
+  pivoted_data AS (SELECT site_month_matrix.SITE,
+      Max(CASE
+        WHEN site_month_matrix.month_pos = 1 THEN site_month_matrix.cnt_by_site
+      END) AS M11,
+      Max(CASE
+        WHEN site_month_matrix.month_pos = 2 THEN site_month_matrix.cnt_by_site
+      END) AS M10,
+      Max(CASE
+        WHEN site_month_matrix.month_pos = 3 THEN site_month_matrix.cnt_by_site
+      END) AS M09,
+      Max(CASE
+        WHEN site_month_matrix.month_pos = 4 THEN site_month_matrix.cnt_by_site
+      END) AS M08,
+      Max(CASE
+        WHEN site_month_matrix.month_pos = 5 THEN site_month_matrix.cnt_by_site
+      END) AS M07,
+      Max(CASE
+        WHEN site_month_matrix.month_pos = 6 THEN site_month_matrix.cnt_by_site
+      END) AS M06,
+      Max(CASE
+        WHEN site_month_matrix.month_pos = 7 THEN site_month_matrix.cnt_by_site
+      END) AS M05,
+      Max(CASE
+        WHEN site_month_matrix.month_pos = 8 THEN site_month_matrix.cnt_by_site
+      END) AS M04,
+      Max(CASE
+        WHEN site_month_matrix.month_pos = 9 THEN site_month_matrix.cnt_by_site
+      END) AS M03,
+      Max(CASE
+        WHEN site_month_matrix.month_pos = 10 THEN site_month_matrix.cnt_by_site
+      END) AS M02,
+      Max(CASE
+        WHEN site_month_matrix.month_pos = 11 THEN site_month_matrix.cnt_by_site
+      END) AS M01,
+      Max(CASE
+        WHEN site_month_matrix.month_pos = 12 THEN site_month_matrix.cnt_by_site
+      END) AS M00,
+      Sum(site_month_matrix.cnt_by_site) AS TOTAL_BY_SITE
+    FROM site_month_matrix
+    GROUP BY site_month_matrix.SITE),
+  month_labels AS (SELECT 1 AS SORT_ORDER,
+      CAST('Month' AS VARCHAR2(100)) AS SITE,
+      CAST(Max(CASE
+        WHEN month_series.month_pos = 1 THEN month_series.month_label
+      END) AS VARCHAR2(20)) AS M11,
+      CAST(Max(CASE
+        WHEN month_series.month_pos = 2 THEN month_series.month_label
+      END) AS VARCHAR2(20)) AS M10,
+      CAST(Max(CASE
+        WHEN month_series.month_pos = 3 THEN month_series.month_label
+      END) AS VARCHAR2(20)) AS M09,
+      CAST(Max(CASE
+        WHEN month_series.month_pos = 4 THEN month_series.month_label
+      END) AS VARCHAR2(20)) AS M08,
+      CAST(Max(CASE
+        WHEN month_series.month_pos = 5 THEN month_series.month_label
+      END) AS VARCHAR2(20)) AS M07,
+      CAST(Max(CASE
+        WHEN month_series.month_pos = 6 THEN month_series.month_label
+      END) AS VARCHAR2(20)) AS M06,
+      CAST(Max(CASE
+        WHEN month_series.month_pos = 7 THEN month_series.month_label
+      END) AS VARCHAR2(20)) AS M05,
+      CAST(Max(CASE
+        WHEN month_series.month_pos = 8 THEN month_series.month_label
+      END) AS VARCHAR2(20)) AS M04,
+      CAST(Max(CASE
+        WHEN month_series.month_pos = 9 THEN month_series.month_label
+      END) AS VARCHAR2(20)) AS M03,
+      CAST(Max(CASE
+        WHEN month_series.month_pos = 10 THEN month_series.month_label
+      END) AS VARCHAR2(20)) AS M02,
+      CAST(Max(CASE
+        WHEN month_series.month_pos = 11 THEN month_series.month_label
+      END) AS VARCHAR2(20)) AS M01,
+      CAST(Max(CASE
+        WHEN month_series.month_pos = 12 THEN month_series.month_label
+      END) AS VARCHAR2(20)) AS M00,
+      CAST('Total by Site' AS VARCHAR2(20)) AS TOTAL_BY_SITE
+    FROM month_series),
+  main_data AS (SELECT 2 AS SORT_ORDER,
+      CAST(pivoted_data.SITE AS VARCHAR2(100)) AS SITE,
+      CAST(pivoted_data.M11 AS VARCHAR2(20)) AS M11,
+      CAST(pivoted_data.M10 AS VARCHAR2(20)) AS M10,
+      CAST(pivoted_data.M09 AS VARCHAR2(20)) AS M09,
+      CAST(pivoted_data.M08 AS VARCHAR2(20)) AS M08,
+      CAST(pivoted_data.M07 AS VARCHAR2(20)) AS M07,
+      CAST(pivoted_data.M06 AS VARCHAR2(20)) AS M06,
+      CAST(pivoted_data.M05 AS VARCHAR2(20)) AS M05,
+      CAST(pivoted_data.M04 AS VARCHAR2(20)) AS M04,
+      CAST(pivoted_data.M03 AS VARCHAR2(20)) AS M03,
+      CAST(pivoted_data.M02 AS VARCHAR2(20)) AS M02,
+      CAST(pivoted_data.M01 AS VARCHAR2(20)) AS M01,
+      CAST(pivoted_data.M00 AS VARCHAR2(20)) AS M00,
+      CAST(pivoted_data.TOTAL_BY_SITE AS VARCHAR2(20)) AS TOTAL_BY_SITE
+    FROM pivoted_data),
+  footer_data AS (SELECT 3 AS SORT_ORDER,
+      CAST('Total by Month' AS VARCHAR2(100)) AS SITE,
+      CAST(Sum(pivoted_data.M11) AS VARCHAR2(20)) AS M11,
+      CAST(Sum(pivoted_data.M10) AS VARCHAR2(20)) AS M10,
+      CAST(Sum(pivoted_data.M09) AS VARCHAR2(20)) AS M09,
+      CAST(Sum(pivoted_data.M08) AS VARCHAR2(20)) AS M08,
+      CAST(Sum(pivoted_data.M07) AS VARCHAR2(20)) AS M07,
+      CAST(Sum(pivoted_data.M06) AS VARCHAR2(20)) AS M06,
+      CAST(Sum(pivoted_data.M05) AS VARCHAR2(20)) AS M05,
+      CAST(Sum(pivoted_data.M04) AS VARCHAR2(20)) AS M04,
+      CAST(Sum(pivoted_data.M03) AS VARCHAR2(20)) AS M03,
+      CAST(Sum(pivoted_data.M02) AS VARCHAR2(20)) AS M02,
+      CAST(Sum(pivoted_data.M01) AS VARCHAR2(20)) AS M01,
+      CAST(Sum(pivoted_data.M00) AS VARCHAR2(20)) AS M00,
+      CAST(Sum(pivoted_data.TOTAL_BY_SITE) AS VARCHAR2(20)) AS TOTAL_BY_SITE
+    FROM pivoted_data)
+SELECT SITE,
+  M11,
+  M10,
+  M09,
+  M08,
+  M07,
+  M06,
+  M05,
+  M04,
+  M03,
+  M02,
+  M01,
+  M00,  
+  TOTAL_BY_SITE
+FROM (SELECT *
+  FROM month_labels
+  UNION ALL
+  SELECT *
+  FROM main_data
+  UNION ALL
+  SELECT *
+  FROM footer_data)
+ORDER BY SORT_ORDER,
+  CASE
+    WHEN SORT_ORDER = 2 THEN SITE
+  END
