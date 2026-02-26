@@ -1,0 +1,75 @@
+/* Tacrolimus Monthly TAT Report — Temple Chemistry (TUHM)
+   Measures: Received to Verified within 45 minutes
+   Parameters: :start_date / :end_date — date range (YYYYMMDD)
+*/
+
+/* --- Detail: individual test rows with TAT calculation --- */
+SELECT
+    TO_CHAR(tr.VERIFIED_DT, 'YYYY-MM')                         AS report_month,
+    o.ID                                                         AS order_no,
+    tr.TEST_ID,
+    tr.TEST_PERFORMING_LOCATION,
+    tr.PRIORITY,
+    DECODE(tr.PRIORITY, 'S','Stat', 'R','Routine', 'T','Timed', tr.PRIORITY) AS priority_desc,
+    tr.RECEIVE_DT,
+    tr.VERIFIED_DT,
+    ROUND((tr.VERIFIED_DT - tr.RECEIVE_DT) * 1440, 1)          AS tat_minutes,
+    CASE
+        WHEN (tr.VERIFIED_DT - tr.RECEIVE_DT) * 1440 <= 45
+        THEN 'Y' ELSE 'N'
+    END                                                          AS within_45
+FROM
+    V_P_LAB_TEST_RESULT tr
+    JOIN V_P_LAB_ORDER  o ON o.AA_ID = tr.ORDER_AA_ID
+WHERE
+    tr.GROUP_TEST_ID             = 'TACR'
+    AND tr.STATE                 IN ('Final', 'Verified', 'Corrected')
+    AND tr.RECEIVE_DT            IS NOT NULL
+    AND tr.VERIFIED_DT           IS NOT NULL
+    AND tr.TEST_PERFORMING_LOCATION = 'TUH'
+    AND tr.VERIFIED_DT           >= TO_DATE(:start_date, 'YYYYMMDD')
+    AND tr.VERIFIED_DT           <  TO_DATE(:end_date,   'YYYYMMDD')
+ORDER BY
+    tr.VERIFIED_DT;
+
+/* --- Summary: monthly totals with percentage, broken out by priority --- */
+SELECT
+    TO_CHAR(tr.VERIFIED_DT, 'YYYY-MM')                         AS report_month,
+    DECODE(tr.PRIORITY, 'S','Stat', 'R','Routine', 'T','Timed', tr.PRIORITY) AS priority_desc,
+    COUNT(*)                                                     AS total_tests,
+    SUM(
+        CASE
+            WHEN (tr.VERIFIED_DT - tr.RECEIVE_DT) * 1440 <= 45
+            THEN 1 ELSE 0
+        END
+    )                                                            AS within_45_min,
+    COUNT(*) - SUM(
+        CASE
+            WHEN (tr.VERIFIED_DT - tr.RECEIVE_DT) * 1440 <= 45
+            THEN 1 ELSE 0
+        END
+    )                                                            AS over_45_min,
+    ROUND(
+        SUM(
+            CASE
+                WHEN (tr.VERIFIED_DT - tr.RECEIVE_DT) * 1440 <= 45
+                THEN 1 ELSE 0
+            END
+        ) / COUNT(*) * 100, 1
+    )                                                            AS pct_within_45
+FROM
+    V_P_LAB_TEST_RESULT tr
+WHERE
+    tr.GROUP_TEST_ID             = 'TACR'
+    AND tr.STATE                 IN ('Final', 'Verified', 'Corrected')
+    AND tr.RECEIVE_DT            IS NOT NULL
+    AND tr.VERIFIED_DT           IS NOT NULL
+    AND tr.TEST_PERFORMING_LOCATION = 'TUH'
+    AND tr.VERIFIED_DT           >= TO_DATE(:start_date, 'YYYYMMDD')
+    AND tr.VERIFIED_DT           <  TO_DATE(:end_date,   'YYYYMMDD')
+GROUP BY
+    TO_CHAR(tr.VERIFIED_DT, 'YYYY-MM'),
+    tr.PRIORITY
+ORDER BY
+    report_month,
+    tr.PRIORITY

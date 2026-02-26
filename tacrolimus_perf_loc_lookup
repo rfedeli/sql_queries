@@ -1,0 +1,18 @@
+/* Quick lookup: what performing locations are used for Tacrolimus (TACR) */
+SELECT * FROM (
+    SELECT
+        tr.TEST_PERFORMING_LOCATION,
+        COUNT(*) AS result_count
+    FROM
+        V_P_LAB_TEST_RESULT tr
+    WHERE
+        tr.GROUP_TEST_ID = 'TACR'
+        AND tr.STATE     IN ('Final', 'Verified', 'Corrected')
+        AND tr.VERIFIED_DT >= TO_DATE(:start_date, 'YYYYMMDD')
+        AND tr.VERIFIED_DT <  TO_DATE(:end_date,   'YYYYMMDD')
+    GROUP BY
+        tr.TEST_PERFORMING_LOCATION
+    ORDER BY
+        result_count DESC
+)
+WHERE ROWNUM <= 10  
