@@ -333,6 +333,36 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 
 **Note:** This table tracks specimen location events including collection, transit between facilities, instrument processing, and final results. The STATUS_DESCRIPTION field is key for identifying transit events (specimens physically moved between locations).
 
+### V_P_LAB_TEST_TO_TUBE — Container receiving information
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 14 | PK |
+| RESULT_AA_ID | NUMBER 14 | FK → V_P_LAB_TEST_RESULT.AA_ID |
+| TUBE_AA_ID | NUMBER 14 | FK → V_P_LAB_TUBE.AA_ID |
+
+**Note:** Links test results to the physical tube/container that was used. Join through this view to trace from a result back to its specimen tube.
+
+### V_P_LAB_SPECIMEN_TUBE — Specimen tube info (combined specimen + tube)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 14 | PK |
+| TUBE_AA_ID | NUMBER 14 | FK → V_P_LAB_TUBE.AA_ID |
+| SPECIMEN_AA_ID | NUMBER 14 | FK → V_P_LAB_SPECIMEN.AA_ID |
+
+**Note:** Bridges tubes to specimens. Used in specimen counting queries (e.g., SCC_Sample_Eval) to navigate from test results through tubes to distinct specimens: `V_P_LAB_TEST_TO_TUBE.TUBE_AA_ID → V_P_LAB_SPECIMEN_TUBE.TUBE_AA_ID → V_P_LAB_SPECIMEN.AA_ID`.
+
+### V_S_LAB_COLL_CENTER — Multisite ordering locations / collection centers
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 14 | PK |
+| ID | VARCHAR2 11 | Collection center code (joins to V_P_LAB_ORDER.COLLECT_CENTER_ID) |
+| SITE | VARCHAR2 5 | Site/facility grouping code (e.g., TEMPLE, JEANES, FOX CHASE) |
+
+**Note:** Used in SCC pivot reports (SCC_Orders_Eval, SCC_Sample_Eval) to group order/specimen volumes by site. The `ID` column maps to `V_P_LAB_ORDER.COLLECT_CENTER_ID`; the `SITE` column provides the higher-level facility grouping for reporting.
+
 ### V_S_LAB_CLINIC — Clinic / ordering location setup
 
 | Column | Type | Description |
@@ -407,6 +437,401 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 | DEPOT | NUMBER 0 | Depot |
 
 **Note:** This view does NOT have an ACTIVE or TYPE column. SENDING_FACITILY is intentionally misspelled in the database (should be SENDING_FACILITY).
+
+### V_S_LAB_TEST_GROUP — Group/orderable test setup
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 14 | PK |
+| ID | VARCHAR2 5 | Group test code (matches V_P_LAB_ORDERED_TEST.TEST_ID, V_P_LAB_TEST_RESULT.GROUP_TEST_ID) |
+| GTNAME_UPPER | VARCHAR2 | Group test name (uppercase) |
+| SERIES_TEST | VARCHAR2 1 | Series test flag (Y/N) |
+| ANALIZE_COMPS_TOGETHER | VARCHAR2 1 | Analyze components together flag (Y/N) |
+| FL_SEND_OUT | VARCHAR2 1 | Send-out flag (Y/N) |
+| FL_PRINT_AS_ORDERED | VARCHAR2 1 | Print as ordered flag (Y/N) |
+| FL_LAST_LEVEL | VARCHAR2 1 | Last-level flag (Y/N) — indicates test is a leaf/final level in test hierarchy |
+| FL_EXPAND_IN_REQ_FORM | VARCHAR2 1 | Expand in request form flag (Y/N) |
+| TEST_PREFIX | VARCHAR2 | Test prefix |
+| TEST_COUNT | NUMBER | Number of component tests in this group |
+| SERIES_LEVEL | NUMBER | Series level (0 = not a series) |
+| ACTIVE | VARCHAR2 1 | Active flag (Y/N) |
+
+**Notes:**
+- Most group tests have `SERIES_TEST = 'N'`, all flag columns = `'N'`, and `TEST_COUNT = 0` / `SERIES_LEVEL = 0`.
+- `FL_LAST_LEVEL = 'Y'` appears on most tests — indicates the test is a terminal/leaf node.
+- `ACTIVE` values include `'Y'` and `'N'` — use to filter current orderable tests.
+- Component tests within a group are defined in `V_S_LAB_TEST_COMPONENT`.
+
+### V_S_LAB_TEST_COMPONENT — Components of a group test
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 14 | PK |
+| TEST_AA_ID | NUMBER 14 | FK → V_S_LAB_TEST_GROUP.AA_ID (parent group test) |
+| TEST_SORT | NUMBER 10 | Sort/display order of component within group |
+| TEST_ID | VARCHAR2 5 | Group test code (same as V_S_LAB_TEST_GROUP.ID) |
+| TEST_NAME | VARCHAR2 59 | Group test name (the parent, not the component) |
+| COMPONENT | VARCHAR2 5 | Component test code (FK → V_S_LAB_TEST.ID) |
+| TEST_CODE | VARCHAR2 5 | Test code (same as COMPONENT in practice) |
+| TEST_PREFIX | CHAR 1 | Test prefix |
+| SERIES_TIME | NUMBER 10 | Series time |
+
+**Notes:**
+- Join to group: `TEST_AA_ID → V_S_LAB_TEST_GROUP.AA_ID`.
+- Join to individual test: `COMPONENT → V_S_LAB_TEST.ID` to get analyte names/details.
+- `TEST_ID` and `TEST_NAME` refer to the **parent group**, not the component.
+- `COMPONENT` and `TEST_CODE` are identical in practice.
+
+### V_S_LAB_DEPARTMENT — Department definition
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 14 | PK |
+| ID | VARCHAR2 7 | Department code (joins to V_S_LAB_TEST.DEPARTMENT_ID, V_S_LAB_WORKSTATION.DEPARTMENT_ID) |
+| NAME | VARCHAR2 60 | Department name (e.g., CHEMISTRY, HEMATOLOGY, COAGULATION, BLOOD BANK) |
+| LOCATION_ID | VARCHAR2 7 | FK → V_S_LAB_LOCATION.ID (facility where this department exists) |
+| DESCRIPTION | VARCHAR2 236 | Description |
+| TYPE | CHAR 1 | Department type |
+| DPTYPE | CHAR 1 | DP type (D in practice) |
+| OWNER | VARCHAR2 7 | Owner |
+| DPOWNER | VARCHAR2 7 | DP owner |
+| EXCLUDED_FROM_CYCLING | VARCHAR2 1 | Excluded from cycling flag |
+| MEDICAL_DIRECTOR | VARCHAR2 15 | Medical director |
+| EXCLUDED_FROM_BILLING | VARCHAR2 1 | Excluded from billing flag |
+| PERFORMED_BY | VARCHAR2 5 | Performed by |
+| APPROACHING_MSG | VARCHAR2 7 | Approaching message |
+| OVERDUE_MSG | VARCHAR2 7 | Overdue message |
+
+**Notes:**
+- Departments are per-facility — e.g., TCHEM (TUH Chemistry), JCHEM (JNS Chemistry), FCHEM (FC Chemistry).
+- `LOCATION_ID` identifies the facility: TUH, JNS, FC, EPC, CH, WFH, NE, ADL, TQUC, TQUH, TVIA, THST, etc.
+- Section names in NAME: CHEMISTRY, COAGULATION, HEMATOLOGY, POINT OF CARE, REFERENCE LAB, BLOOD BANK, URINALYSIS, MICROBIOLOGY, IMMUNOLOGY, MOLECULAR, PATHOLOGY, CYTOLOGY, VIROLOGY, HLA, BILLING, PHLEBOTOMY, RESEARCH.
+
+### V_S_LAB_WORKSTATION — Workstation definition
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 14 | PK |
+| ID | VARCHAR2 7 | Workstation code (joins to V_S_LAB_TEST.WORKSTATION_ID) |
+| NAME | VARCHAR2 60 | Workstation name |
+| DEPARTMENT_ID | VARCHAR2 7 | FK → V_S_LAB_DEPARTMENT.ID |
+| LOCATION_ID | VARCHAR2 7 | FK → V_S_LAB_LOCATION.ID (facility) |
+| DESCRIPTION | VARCHAR2 236 | Description |
+| BARCODE_USED | CHAR 1 | Barcode used flag |
+| BARCODE_TYPE | VARCHAR2 4000 | Barcode type |
+| BARCODE_LENGHT | NUMBER 5 | Barcode length (misspelled in DB) |
+| DEAD_SPACE_VOLUME | NUMBER 10 | Dead space volume |
+| DELIVERY_LOCATION | VARCHAR2 20 | Delivery location |
+| REF_LAB | NUMBER 5 | Reference lab flag (1 = reference lab workstation) |
+| WS_ROCHE_AUTOMATION | VARCHAR2 1 | Roche automation flag |
+| STABILITY_PRN | VARCHAR2 79 | Stability PRN |
+
+**Notes:**
+- `LOCATION_ID` → V_S_LAB_LOCATION.ID gives the facility for "Labs Performing Test".
+- `REF_LAB = 1` identifies reference lab workstations (send-outs).
+- `BARCODE_LENGHT` is intentionally misspelled in the database.
+
+### V_S_LAB_TEST_ENVIRONMENT — Test-to-workstation mapping
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 14 | PK |
+| TEST_ID | VARCHAR2 5 | Test code (FK → V_S_LAB_TEST.ID) |
+| WORKSTATION_ID | VARCHAR2 5 | Workstation code (FK → V_S_LAB_WORKSTATION.ID) |
+| ENVIRONMENT | VARCHAR2 3 | Environment code |
+
+**Notes:**
+- Many-to-many mapping: one test can be performed at multiple workstations/locations.
+- Join chain for "Labs Performing Test": TEST_ENVIRONMENT.WORKSTATION_ID → V_S_LAB_WORKSTATION.LOCATION_ID → V_S_LAB_LOCATION.SITE.
+
+### V_S_LAB_TEST_GROUP_SPECIMEN — Group test specimen/tube requirements
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 14 | PK |
+| TEST_AA_ID | NUMBER 14 | FK → V_S_LAB_TEST_GROUP.AA_ID |
+| TEST_SORT | NUMBER 10 | Sort order |
+| SAMPLE_TYPE | VARCHAR2 12 | Sample/specimen type code (FK → V_S_LAB_SPECIMEN.ID) |
+| NUMBER_OF_SAMPLES | NUMBER 10 | Number of samples needed |
+| SHIPPING_VOLUME | NUMBER 10 | Shipping volume |
+| UNITS | VARCHAR2 40 | Volume units |
+| SHIPPING_CONTAINER | VARCHAR2 8 | Shipping container type |
+| SHIPPING_TEMPERATURE | CHAR 1 | Shipping temperature |
+| TESTS_TO_DISPLAY | VARCHAR2 79 | Tests to display |
+| TEST_ID | VARCHAR2 5 | Test ID |
+| TEST_NAME | VARCHAR2 59 | Test name |
+
+**Notes:**
+- Join: `TEST_AA_ID → V_S_LAB_TEST_GROUP.AA_ID`.
+- `SAMPLE_TYPE → V_S_LAB_SPECIMEN.ID` to get human-readable tube NAME.
+
+### V_S_LAB_SPECIMEN — Specimen tube type definitions
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER | PK |
+| ID | VARCHAR2 8 | Tube type code (NOT NULL) |
+| NAME | VARCHAR2 50 | Tube name (e.g., "Gold SST", "Purple EDTA") (NOT NULL) |
+| ACTIVE | VARCHAR2 1 | Active flag |
+| CATEGORY | VARCHAR2 1 | Category (NOT NULL) |
+| DRAW_UNITS | VARCHAR2 40 | Draw units |
+| DRAW_TYPE | VARCHAR2 8 | Draw type |
+| ALIQUTING_TUBE | VARCHAR2 8 | Aliquoting tube type |
+| PROCESSING_CONTAINER | VARCHAR2 1 | Processing container flag |
+| DELIVERY_RACK | VARCHAR2 10 | Delivery rack |
+| CAPACITY | VARCHAR2 | Capacity |
+| MIN_VOLUME | VARCHAR2 | Minimum volume |
+| HAZARD | VARCHAR2 15 | Hazard info |
+| TYPE_SOURCE | VARCHAR2 12 | Type source |
+| TYPE_MODIFIER | VARCHAR2 12 | Type modifier |
+| ROBOTIC | VARCHAR2 | Robotic flag |
+| ADDITIVES_PRESERVATIVES | VARCHAR2 9 | Additives/preservatives |
+
+**Notes:**
+- `ID` matches `V_S_LAB_TEST_GROUP_SPECIMEN.SAMPLE_TYPE` and `V_S_LAB_TEST_SPECIMEN.COLLECTION_CONTAINER`.
+- `NAME` is the human-readable tube description for the compendium.
+
+### V_S_LAB_TEST_SPECIMEN — Test specimen/container requirements (per test/workstation)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 14 | PK |
+| TEST_AA_ID | NUMBER 14 | FK → V_S_LAB_TEST.AA_ID |
+| TEST_SORT | NUMBER 10 | Sort order |
+| TEST_ID | VARCHAR2 5 | Test code |
+| WORKSTATION_ID | VARCHAR2 5 | Workstation code (container can vary by workstation) |
+| TEST_NAME | VARCHAR2 59 | Test name |
+| PATIENT_TYPE | CHAR 1 | Patient type |
+| COLLECTION_CONTAINER | VARCHAR2 8 | Container code (FK → V_S_LAB_SPECIMEN.ID) |
+| COLLECT_SEPARATELY | VARCHAR2 1 | Collect separately flag |
+| RUN_ON_COLLECTION | VARCHAR2 1 | Run on collection flag |
+| COLLECT_INSTR | VARCHAR2 8 | Collection instructions |
+| PROCESSING_CONTAINER | VARCHAR2 8 | Processing container code |
+| EXTRA_TUBES | NUMBER 10 | Extra tubes needed |
+| PROCESS_SEPARATELY | VARCHAR2 1 | Process separately flag |
+| PROCESS_INSTR | VARCHAR2 8 | Processing instructions |
+| AGE | NUMBER 10 | Age threshold |
+| AGE_UNIT | CHAR 1 | Age unit |
+| VOLUME | NUMBER 10 | Required volume |
+| ADD_UP_VOLUME | NUMBER 10 | Additive volume |
+
+**Notes:**
+- Maps tests to collection containers at the **test + workstation** level (more granular than group specimen).
+- `COLLECTION_CONTAINER → V_S_LAB_SPECIMEN.ID` for tube name lookup.
+- Same test may have different containers at different workstations (e.g., PTSEC uses BLUE at most sites but BLUPLAS at TCOAG).
+- Use as fallback when `V_S_LAB_TEST_GROUP_SPECIMEN` has no rows for a group test.
+
+### V_S_LAB_TUBE_CAPACITY — Tube type capacity/volume specs
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER | PK |
+| CAPACITY | NUMBER | Tube capacity |
+| MIN_VOLUME | NUMBER | Minimum volume |
+| VOL_COMMENT | VARCHAR2 79 | Volume comment |
+| SPECIMEN_ID | VARCHAR2 8 | FK → V_S_LAB_SPECIMEN.ID (NOT NULL) |
+| CAPACITY_100 | NUMBER | Capacity (×100) |
+| MIN_VOLUME_100 | NUMBER | Minimum volume (×100) |
+
+**Notes:**
+- Child of `V_S_LAB_SPECIMEN` — provides capacity/volume specs per tube type.
+- Not a container name lookup table — use `V_S_LAB_SPECIMEN` for tube names.
+
+### V_S_LAB_TEST — Individual/component test setup
+
+Large table (100+ columns). Key columns grouped by category below.
+
+#### Identity & Classification
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 14 | PK (NOT NULL) |
+| ID | VARCHAR2 5 | Test code (matches V_P_LAB_TEST_RESULT.TEST_ID) |
+| NAME | VARCHAR2 55 | Test name |
+| NAME_UPPER | VARCHAR2 236 | Test name (uppercase) |
+| NAME_REPORTABLE | VARCHAR2 | Reportable name |
+| ACTIVE | CHAR 1 | Active flag |
+| TYPE | VARCHAR2 1 | Test type |
+| SECONDARY_ID | VARCHAR2 46 | Secondary identifier |
+| THIRD_ID | VARCHAR2 46 | Third identifier |
+| LOINC | VARCHAR2 46 | LOINC code |
+| BARCODE | NUMBER 10 | Barcode number |
+| RESULT_TYPE | VARCHAR2 | Result type |
+| METHODOLOGY | CHAR 1 | Methodology code |
+| METHOD_CODE | VARCHAR2 11 | Method code |
+| WORKSTATION_ID | VARCHAR2 5 | Default workstation |
+| DEPARTMENT_ID | VARCHAR2 5 | Default department |
+| LOCATION_ID | VARCHAR2 | Default location |
+| CONTAINER_ID | VARCHAR2 | Container ID (ref lab/aliquot containers, NOT collection tubes — use V_S_LAB_TEST_GROUP_SPECIMEN or V_S_LAB_TEST_SPECIMEN for collection containers) |
+| SPEC_TYPE | VARCHAR2 | Specimen type |
+| INDIVIDUAL | CHAR 1 | Individual test flag |
+
+#### Units, Calculation & Precision
+
+| Column | Type | Description |
+|--------|------|-------------|
+| UNITS | VARCHAR2 80 | Result units |
+| PRECISION | NUMBER | Decimal precision |
+| PRECISION_POSITIVE | CHAR 1 | Positive precision flag |
+| CALCULATE | VARCHAR2 239 | Calculation formula |
+| SIGN_FIGURES | NUMBER | Significant figures |
+
+#### QC Flags (VARCHAR2 1)
+
+| Column | Description |
+|--------|-------------|
+| QC_DISPLAY_WARNING | Display QC warning |
+| QC_TRUE_LOCK | True lock on QC failure |
+| QC_CHK_ORDER | Check QC at order |
+| QC_AT_RESULT | Check QC at result |
+| QC_AT_VERIFICATION | Check QC at verification |
+| QC_AT_FINAL | Check QC at final |
+| QC_INVENTORY | QC inventory check |
+| QC_TIME_CHART | QC time chart |
+
+#### Feature Flags (all VARCHAR2 1)
+
+| Column | Description |
+|--------|-------------|
+| FL_REF_RANGES | Has reference ranges |
+| FL_AGE_RANGES | Has age-based ranges |
+| FL_NOT_IN_TAT_CALC | Exclude from TAT calculation |
+| FL_NOT_IN_TAT_STAT | Exclude from TAT statistics |
+| FL_NOT_IN_CALL | Exclude from call list |
+| FL_CAN_ORDER_STAT | Can order as stat |
+| FL_CAN_ORDER_URGENT | Can order as urgent |
+| FL_CAN_ORD_INDIV | Can order individually |
+| FL_MEDICARE_EXPER | Medicare experiment flag |
+| FL_REFRANGECASTDNC | Reference range cast dance (?) |
+| FL_AUTOEXPIRY | Auto-expiry enabled |
+| FL_AUTOREPORTABLE | Auto-reportable |
+| FL_AUTORESULT | Auto-result enabled |
+| FL_HIDDEN | Hidden from ordering |
+| FL_HIDDEN_FOR_CALL | Hidden from call list |
+| FL_DIAG_REQ_AT_ORD | Diagnosis required at order |
+| FL_PRICE_IN_BILL | Show price in bill |
+| FL_PRICE_IN_RES | Show price in result |
+| FL_PROOF | Proof flag |
+| FL_DONOTREPORT | Do not report |
+| FL_RES_NECESS_AT_ORD | Result necessary at order |
+| FL_NO_EXTRA_CHARGE | No extra charge |
+| FL_USE_FOR_PATH | Use for pathology |
+| FL_PRINT_MEDIA_LABEL | Print media label |
+| FL_PRINT_MIC_TEST_LABEL | Print micro test label |
+| FL_SPLIT_TEST_ON_REP | Split test on report |
+| FL_PATH_REVIEW | Path review required |
+| FL_PATH_REVIEW_ABN | Path review on abnormal |
+| FL_PATH_REVIEW_PANIC | Path review on panic |
+| FL_PATH_REVIEW_RANGE | Path review on range |
+| FL_ELR_RESULT_REPORTABLE | ELR result reportable |
+| FL_ELR_ORDER_REPORTABLE | ELR order reportable |
+| FL_ENFORCE_RESULT_PRECISION | Enforce result precision |
+| FL_DO_NOT_MERGE_ST_ORDERS | Do not merge standing orders |
+| FL_MANUAL_MERGE_DO_NOT_MERGE | Manual merge — do not merge |
+| FL_CALL_NURSE_PANIC | Call nurse on panic |
+| FL_PAT_REW_ON_MIC_POS | Patient review on micro positive |
+| FL_DISPL_PROMPT_CYCL_TESTS | Display prompt for cycling tests |
+| FL_PRIMARY_CERT | Primary certification |
+| FL_CATEGORY | Category flag |
+| FL_ASSIGN_COLLECTING | Assign collecting flag |
+| FL_IS_FOREIGN_BBANK_PRODUCT | Foreign blood bank product |
+| HOLD_AUTOVERIFY | Hold auto-verify |
+| HOLD_AUTOVERIFICATION | Hold auto-verification |
+| INDICATE_AS_REPORTABLE | Indicate as reportable |
+| IS_PRINT_LAB_PROMPT_RESULT | Print lab prompt result |
+| IS_NUM_OF_SPECIMENS | Number of specimens flag |
+
+#### CPT / Billing Codes
+
+| Column | Type | Description |
+|--------|------|-------------|
+| CPT_BASIC_CODE_1–8 | VARCHAR2 | CPT basic codes (up to 8) |
+| CPT_ALTERNATE_CODE_1–8 | VARCHAR2 | CPT alternate codes (up to 8) |
+| CPT_EXP_DATE_1–8 | VARCHAR2 | CPT expiration dates (up to 8) |
+| BILLING_CODE_1–8 | VARCHAR2 | Billing codes (up to 8) |
+| FEE | VARCHAR2 | Fee amount |
+
+#### Specimen & Shipping
+
+| Column | Type | Description |
+|--------|------|-------------|
+| VOLUME | NUMBER | Required volume |
+| ADD_UP_VOLUME | NUMBER 10 | Additive volume |
+| DRAW_UNITS | VARCHAR2 | Draw units |
+| SPECIMEN_DRAW_TYPE | VARCHAR2 | Specimen draw type |
+| COLLECTION_CONTAINER | VARCHAR2 | Collection container |
+| SHIPPING_TEMP | VARCHAR2 | Shipping temperature |
+| SHIPPING_CONTAINER | VARCHAR2 | Shipping container |
+| SHIPPING_UNITS | VARCHAR2 46 | Shipping units |
+| SHIPPING_VOLUME | NUMBER 10 | Shipping volume |
+| REFLAB_TEMP | CHAR | Reference lab temperature |
+| EXTERNAL_TEMP | CHAR | External temperature |
+| EXTRAMURAL_TEMP | CHAR | Extramural temperature |
+| INTRAMURAL_TEMP | CHAR | Intramural temperature |
+| MIN_VOL_ANALYSIS | NUMBER 10 | Minimum volume for analysis |
+
+#### TAT Limits
+
+| Column | Type | Description |
+|--------|------|-------------|
+| TAT_STAT | NUMBER 5 | TAT limit — stat priority |
+| TAT_URGENT | NUMBER 5 | TAT limit — urgent priority |
+| TAT_TIMED | NUMBER 5 | TAT limit — timed/routine priority |
+| DELTA_TIME_RANGE | NUMBER 5 | Delta time range |
+
+#### Result Ranges (all NUMBER)
+
+| Column | Description |
+|--------|-------------|
+| NORMAL_FLOW / NORMAL_FHIGH | Normal range — female (low/high) |
+| NORMAL_MLOW / NORMAL_MHIGH | Normal range — male (low/high) |
+| PANIC_FLOW / PANIC_FHIGH | Panic range — female (low/high) |
+| PANIC_MLOW / PANIC_MHIGH | Panic range — male (low/high) |
+| ABSURD_FLOW / ABSURD_FHIGH | Absurd range — female (low/high) |
+| ABSURD_MLOW / ABSURD_MHIGH | Absurd range — male (low/high) |
+| DELTA_F_NORM / DELTA_F_HIGH | Delta — female (normal/high) |
+| DELTA_A_LOW / DELTA_A_NORM / DELTA_A_HIGH | Delta — all (low/normal/high) |
+| GAP_STAT_WEIGHT | Gap stat weight |
+
+#### Range Messages (all VARCHAR2 5)
+
+| Column | Description |
+|--------|-------------|
+| MES_ABNORMAL_LOW / MES_ABNORMAL_HIGH | Message for abnormal result |
+| MES_PANIC_LOW / MES_PANIC_HIGH | Message for panic result |
+| MES_ABSURD_LOW / MES_ABSURD_HIGH | Message for absurd result |
+| MES_TEST_COMMENT | Test comment message |
+
+#### Labels, Reporting & Misc
+
+| Column | Type | Description |
+|--------|------|-------------|
+| LBL_TEXT_1–3 | VARCHAR2 | Label text lines |
+| RLAB_REP_TID | VARCHAR2 | Reference lab report TID |
+| RLAB_TST_TYPE | VARCHAR2 | Reference lab test type |
+| RLAB_RANGE | VARCHAR2 | Reference lab range |
+| FREQUENCY | VARCHAR2 | Testing frequency |
+| KEYPAD | VARCHAR2 | Keypad code |
+| RESULT_KEYPAD | VARCHAR2 5 | Result keypad |
+| MIC_REV_KEYPAD | VARCHAR2 5 | Micro review keypad |
+| DELTA | VARCHAR2 | Delta check code |
+| DELTA_DT_UNIT | NUMBER | Delta date unit |
+| CALL_SIGNIF | VARCHAR2 | Call significance |
+| COMMAND | VARCHAR2 79 | Command/macro |
+| DEFAULT_RESULT | VARCHAR2 46 | Default result value |
+| DEFAULT_SOURCE | VARCHAR2 | Default source |
+| MESSAGE_FORMULARY | VARCHAR2 5 | Message formulary code |
+| OBSERVATION_METHOD | VARCHAR2 | Observation method |
+| COMMENTS_AND_TAGS | VARCHAR2 | Comments and tags |
+| TRC_THRE | VARCHAR2 | Trace threshold (?) |
+
+**Notes:**
+- `FL_NOT_IN_TAT_CALC = 'Y'` excludes a test from TAT calculations — important for TAT reports.
+- `TAT_STAT`, `TAT_URGENT`, `TAT_TIMED` define expected TAT limits per priority.
+- Range columns (PANIC, ABSURD, NORMAL) are split by sex: `*_FLOW`/`*_FHIGH` (female), `*_MLOW`/`*_MHIGH` (male).
+- CPT_BASIC_CODE_1–8 are **NOT populated** in this system. Use `V_S_ARE_BILLRULES.BRCPTCODE` (joined via `BRTSTCODE = test component ID`) as the authoritative CPT source.
+- Many FL_ flags are `'N'` by default. Key flags for reporting: `FL_NOT_IN_TAT_CALC`, `FL_AUTOREPORTABLE`, `FL_HIDDEN`, `FL_DONOTREPORT`.
+- Join to group tests via `V_S_LAB_TEST_COMPONENT` (component → group relationship).
 
 ---
 
@@ -647,7 +1072,7 @@ V_P_ARE_BILLERROR.BERCODE → V_S_ARE_ARERROR.ERRCODE  (error definition lookup;
 |--------|------|-------------|
 | TSTINTN | NUMBER | PK — internal number |
 | TSTCODE | VARCHAR2 15 | AR test code |
-| TSTSYSCODE | VARCHAR2 5 | System code (links to SoftLab test) |
+| TSTSYSCODE | VARCHAR2 5 | System module code (value is 'LAB' for SoftLab — NOT a test code; use TSTCODE to match V_S_LAB_TEST.ID) |
 | TSTDESC | VARCHAR2 59 | Test description |
 | TSTNOTAX | NUMBER | No tax flag |
 | TSTTAXRATE | NUMBER | Tax rate |

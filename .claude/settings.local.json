@@ -40,7 +40,8 @@
       "Bash(git mv:*)",
       "Bash(git rm:*)",
       "Bash(ls:*)",
-      "Read(//c/Users/fedelir/OneDrive - Temple University Health System, Inc/Desktop/sql_queries/**)"
+      "Read(//c/Users/fedelir/OneDrive - Temple University Health System, Inc/Desktop/sql_queries/**)",
+      "Bash(git status -u)"
     ]
   }
 }
