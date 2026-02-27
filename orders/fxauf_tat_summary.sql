@@ -6,13 +6,12 @@ Purpose: Evaluate received-to-verified TAT for Fox Chase Urinalysis
          Each row is a detail record with TAT data; summary stats are appended
          as columns via window functions so everything comes back in one result set.
 
-Parameters:
-  :START_DATE - Start of date range in YYYYMMDD format (e.g., 20250101)
-  :END_DATE   - End of date range in YYYYMMDD format (e.g., 20251231)
+Parameter: :start_date — any date within the target month (YYYYMMDD), e.g. '20260228'
+           The query covers the full calendar month containing that date.
+           Defaults to previous calendar month if left empty.
 
-Example usage:
-  DEFINE START_DATE = 20250101
-  DEFINE END_DATE = 20251231
+Additional Columns:
+  - REPORT_MONTH: The month the report covers (e.g., 'January 2026')
 
 Detail Columns:
   - MRN: Medical record number
@@ -56,7 +55,8 @@ SELECT
   ROUND(
     SUM(CASE WHEN (tr.VERIFIED_DT - tr.RECEIVE_DT) * 1440 > 60 THEN 1 ELSE 0 END) OVER ()
     / COUNT(*) OVER () * 100, 2
-  ) AS PCT_EXCEEDED_60_MIN
+  ) AS PCT_EXCEEDED_60_MIN,
+  TO_CHAR(TRUNC(NVL(TO_DATE(:start_date, 'YYYYMMDD'), ADD_MONTHS(SYSDATE, -1)), 'MM'), 'Month YYYY') AS REPORT_MONTH
 FROM V_P_LAB_TEST_RESULT tr
 JOIN V_P_LAB_ORDER o ON o.AA_ID = tr.ORDER_AA_ID
 JOIN V_P_LAB_STAY s ON s.AA_ID = o.STAY_AA_ID
@@ -65,11 +65,12 @@ JOIN V_P_LAB_ORDERED_TEST ot ON ot.ORDER_AA_ID = tr.ORDER_AA_ID
                              AND ot.TEST_ID = tr.GROUP_TEST_ID
                              AND ot.WORKSTATION_ID = tr.ORDERING_WORKSTATION_ID
 WHERE tr.GROUP_TEST_ID IN ('FXAUF', 'FXALM')
+  AND tr.TESTING_WORKSTATION_ID = 'TCOAG'
   AND tr.PRIORITY = 'S'
   AND tr.STATE IN ('Final', 'Corrected')
   AND tr.RECEIVE_DT IS NOT NULL
   AND tr.VERIFIED_DT IS NOT NULL
-  AND TRUNC(ot.ORDERING_DT) BETWEEN TO_DATE(:START_DATE, 'YYYYMMDD')
-                                AND TO_DATE(:END_DATE, 'YYYYMMDD')
+  AND ot.ORDERING_DT >= TRUNC(NVL(TO_DATE(:start_date, 'YYYYMMDD'), ADD_MONTHS(SYSDATE, -1)), 'MM')
+  AND ot.ORDERING_DT <  ADD_MONTHS(TRUNC(NVL(TO_DATE(:start_date, 'YYYYMMDD'), ADD_MONTHS(SYSDATE, -1)), 'MM'), 1)
   AND REGEXP_LIKE(p.ID, '^E[0-9]+$')
 ORDER BY ot.ORDERING_DT DESC;
