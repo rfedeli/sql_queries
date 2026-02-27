@@ -70,7 +70,7 @@ sections AS (
     FROM (
         SELECT DISTINCT tc.TEST_AA_ID, d.NAME AS section_name
         FROM V_S_LAB_TEST_COMPONENT tc
-        JOIN V_S_LAB_TEST t ON t.ID = tc.COMPONENT
+        JOIN V_S_LAB_TEST t ON t.ID = tc.COMPONENT AND t.ACTIVE = 'Y'
         JOIN V_S_LAB_DEPARTMENT d ON d.ID = t.DEPARTMENT_ID
     ) tc
     GROUP BY tc.TEST_AA_ID
@@ -78,19 +78,47 @@ sections AS (
 
 -- 4. CPT Codes: from SoftAR BILLRULES (authoritative source)
 --    V_S_LAB_TEST.CPT_BASIC_CODE_1-8 are NOT populated in this system
+--    Parent-billed tests (e.g., BMP) get one CPT from the parent billing rule.
+--    Component-billed tests (BRNOBILL = 2 or no parent rule) get CPTs per component.
+
+-- 4a. Parent-level CPT: group test billed as a single unit
+parent_cpt AS (
+    SELECT DISTINCT gtg.AA_ID AS TEST_AA_ID, br.BRCPTCODE AS cpt_code
+    FROM group_tests gtg
+    JOIN V_S_ARE_BILLRULES br ON br.BRTSTCODE = gtg.ID
+                              AND br.BRSTAT = 0
+                              AND br.BRCPTCODE IS NOT NULL
+                              AND NVL(br.BRNOBILL, 0) NOT IN (1, 2)
+                              AND (br.BREXPDT IS NULL OR br.BREXPDT > SYSDATE)
+                              AND (br.BRBEGDT IS NULL OR br.BRBEGDT <= SYSDATE)
+),
+
+-- 4b. Component-level CPT: for tests that split billing to subcomponents
+component_cpt AS (
+    SELECT DISTINCT tc.TEST_AA_ID, br.BRCPTCODE AS cpt_code
+    FROM V_S_LAB_TEST_COMPONENT tc
+    JOIN V_S_ARE_BILLRULES br ON br.BRTSTCODE = tc.COMPONENT
+                              AND br.BRSTAT = 0
+                              AND br.BRCPTCODE IS NOT NULL
+                              AND (br.BREXPDT IS NULL OR br.BREXPDT > SYSDATE)
+                              AND (br.BRBEGDT IS NULL OR br.BRBEGDT <= SYSDATE)
+    WHERE NOT EXISTS (
+        SELECT 1 FROM parent_cpt pc WHERE pc.TEST_AA_ID = tc.TEST_AA_ID
+    )
+),
+
+-- 4c. Combine parent and component CPTs
 cpt_codes AS (
     SELECT
-        tc.TEST_AA_ID,
+        TEST_AA_ID,
         LISTAGG(cpt_code, ', ' ON OVERFLOW TRUNCATE '...' WITHOUT COUNT)
             WITHIN GROUP (ORDER BY cpt_code) AS cpt_list
     FROM (
-        SELECT DISTINCT tc.TEST_AA_ID, br.BRCPTCODE AS cpt_code
-        FROM V_S_LAB_TEST_COMPONENT tc
-        JOIN V_S_ARE_BILLRULES br ON br.BRTSTCODE = tc.COMPONENT
-                                  AND br.BRSTAT = 0
-                                  AND br.BRCPTCODE IS NOT NULL
-    ) tc
-    GROUP BY tc.TEST_AA_ID
+        SELECT TEST_AA_ID, cpt_code FROM parent_cpt
+        UNION
+        SELECT TEST_AA_ID, cpt_code FROM component_cpt
+    )
+    GROUP BY TEST_AA_ID
 ),
 
 -- 5. Collection Containers: primary from group specimen, fallback from test specimen
@@ -123,6 +151,12 @@ SELECT
     sec.section_list                AS "Section in Lab",
     an.analyte_list                 AS "Analytes Included in Order",
     cpt.cpt_list                    AS "CPT Code(s)",
+    CASE WHEN EXISTS (SELECT 1 FROM parent_cpt pc WHERE pc.TEST_AA_ID = gtg.AA_ID)
+         THEN 'Parent'
+         WHEN EXISTS (SELECT 1 FROM component_cpt cc WHERE cc.TEST_AA_ID = gtg.AA_ID)
+         THEN 'Component'
+         ELSE NULL
+    END                             AS "Billing Level",
     CASE WHEN gtg.FL_SEND_OUT = 'Y'
          THEN 'Yes' ELSE NULL
     END                             AS "Lab Only?",
