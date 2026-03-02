@@ -1,46 +1,66 @@
 -- ============================================================
--- Epic Test Compendium Export
--- Produces: LIS Order Code, Name, Labs Performing Test,
---           Section in Lab, Analytes, CPT Codes,
---           Lab Only?, Collection Containers
+-- Epic Test Compendium Export — One Row Per Individual Test
+-- Produces: Test Name, Test Code, LOINC, Unit of Measure,
+--           Result Type, Section, Instruments, Labs Performing,
+--           CPT Code(s), Collection Containers
 -- ============================================================
 
 WITH
--- 0. Deduplicate group tests: pick one AA_ID per test code (ID)
---    Some tests have multiple AA_IDs in V_S_LAB_TEST_GROUP
-group_tests AS (
-    SELECT ID, MAX(AA_ID) AS AA_ID,
-           MAX(GTNAME_UPPER) AS GTNAME_UPPER,
-           MAX(FL_SEND_OUT) AS FL_SEND_OUT
-    FROM V_S_LAB_TEST_GROUP
+-- 0. Deduplicate individual tests: one row per test code
+tests AS (
+    SELECT ID,
+           MAX(NAME)           AS NAME,
+           MAX(LOINC)          AS LOINC,
+           MAX(UNITS)          AS UNITS,
+           MAX(RESULT_TYPE)    AS RESULT_TYPE,
+           MAX(DEPARTMENT_ID)  AS DEPARTMENT_ID
+    FROM V_S_LAB_TEST
     WHERE ACTIVE = 'Y'
     GROUP BY ID
 ),
 
--- 1. Analytes: aggregate component test names per group test
-analytes AS (
+-- 1a. Configured instruments (from setup tables)
+instruments_configured AS (
     SELECT
-        tc.TEST_AA_ID,
-        LISTAGG(comp_name, ', ' ON OVERFLOW TRUNCATE '...' WITHOUT COUNT)
-            WITHIN GROUP (ORDER BY comp_name) AS analyte_list
+        TEST_ID,
+        LISTAGG(ws_name, ', ' ON OVERFLOW TRUNCATE '...' WITHOUT COUNT)
+            WITHIN GROUP (ORDER BY ws_name) AS instrument_list
     FROM (
-        SELECT DISTINCT tc.TEST_AA_ID, t.NAME AS comp_name
-        FROM V_S_LAB_TEST_COMPONENT tc
-        JOIN V_S_LAB_TEST t ON t.ID = tc.COMPONENT AND t.ACTIVE = 'Y'
-    ) tc
-    GROUP BY tc.TEST_AA_ID
+        SELECT DISTINCT te.TEST_ID, ws.NAME AS ws_name
+        FROM V_S_LAB_TEST_ENVIRONMENT te
+        JOIN V_S_LAB_WORKSTATION ws ON ws.ID = te.WORKSTATION_ID
+        WHERE NVL(ws.REF_LAB, 0) = 0
+    )
+    GROUP BY TEST_ID
 ),
 
--- 2. Labs Performing Test: aggregate distinct facilities per group test
---    Uses SITE from location for facility-level grouping
+-- 1b. Active instruments (from actual results in the last 7 days)
+instruments_active AS (
+    SELECT
+        TEST_ID,
+        LISTAGG(ws_name, ', ' ON OVERFLOW TRUNCATE '...' WITHOUT COUNT)
+            WITHIN GROUP (ORDER BY ws_name) AS instrument_list
+    FROM (
+        SELECT DISTINCT tr.TEST_ID, ws.NAME AS ws_name
+        FROM V_P_LAB_TEST_RESULT tr
+        JOIN V_S_LAB_WORKSTATION ws ON ws.ID = tr.TESTING_WORKSTATION_ID
+        WHERE tr.VERIFIED_DT >= SYSDATE - 7
+          AND tr.STATE IN ('Final', 'Verified', 'Corrected')
+          AND tr.TESTING_WORKSTATION_ID IS NOT NULL
+          AND NVL(ws.REF_LAB, 0) = 0
+    )
+    GROUP BY TEST_ID
+),
+
+-- 2. Labs performing test (facility level, per individual test)
 performing_labs AS (
     SELECT
-        tc.TEST_AA_ID,
+        TEST_ID,
         LISTAGG(facility, ', ' ON OVERFLOW TRUNCATE '...' WITHOUT COUNT)
             WITHIN GROUP (ORDER BY facility) AS lab_list
     FROM (
         SELECT DISTINCT
-            tc.TEST_AA_ID,
+            te.TEST_ID,
             CASE loc.SITE
                 WHEN 'TUH'   THEN 'Temple University Hospital'
                 WHEN 'JNS'   THEN 'Jeanes Hospital'
@@ -51,120 +71,64 @@ performing_labs AS (
                 WHEN 'NE'    THEN 'Northeastern Hospital'
                 ELSE loc.SITE
             END AS facility
-        FROM V_S_LAB_TEST_COMPONENT tc
-        JOIN V_S_LAB_TEST_ENVIRONMENT te ON te.TEST_ID = tc.COMPONENT
+        FROM V_S_LAB_TEST_ENVIRONMENT te
         JOIN V_S_LAB_WORKSTATION ws ON ws.ID = te.WORKSTATION_ID
         JOIN V_S_LAB_LOCATION loc ON loc.ID = ws.LOCATION_ID
-        WHERE NVL(ws.REF_LAB, 0) = 0  -- exclude reference lab workstations
-    ) tc
-    GROUP BY tc.TEST_AA_ID
-),
-
--- 3. Section in Lab: aggregate distinct section names per group test
---    Uses department NAME which is generic (Chemistry, Hematology, etc.)
-sections AS (
-    SELECT
-        tc.TEST_AA_ID,
-        LISTAGG(section_name, ', ' ON OVERFLOW TRUNCATE '...' WITHOUT COUNT)
-            WITHIN GROUP (ORDER BY section_name) AS section_list
-    FROM (
-        SELECT DISTINCT tc.TEST_AA_ID, d.NAME AS section_name
-        FROM V_S_LAB_TEST_COMPONENT tc
-        JOIN V_S_LAB_TEST t ON t.ID = tc.COMPONENT AND t.ACTIVE = 'Y'
-        JOIN V_S_LAB_DEPARTMENT d ON d.ID = t.DEPARTMENT_ID
-    ) tc
-    GROUP BY tc.TEST_AA_ID
-),
-
--- 4. CPT Codes: from SoftAR BILLRULES (authoritative source)
---    V_S_LAB_TEST.CPT_BASIC_CODE_1-8 are NOT populated in this system
---    Parent-billed tests (e.g., BMP) get one CPT from the parent billing rule.
---    Component-billed tests (BRNOBILL = 2 or no parent rule) get CPTs per component.
-
--- 4a. Parent-level CPT: group test billed as a single unit
-parent_cpt AS (
-    SELECT DISTINCT gtg.AA_ID AS TEST_AA_ID, br.BRCPTCODE AS cpt_code
-    FROM group_tests gtg
-    JOIN V_S_ARE_BILLRULES br ON br.BRTSTCODE = gtg.ID
-                              AND br.BRSTAT = 0
-                              AND br.BRCPTCODE IS NOT NULL
-                              AND NVL(br.BRNOBILL, 0) NOT IN (1, 2)
-                              AND (br.BREXPDT IS NULL OR br.BREXPDT > SYSDATE)
-                              AND (br.BRBEGDT IS NULL OR br.BRBEGDT <= SYSDATE)
-),
-
--- 4b. Component-level CPT: for tests that split billing to subcomponents
-component_cpt AS (
-    SELECT DISTINCT tc.TEST_AA_ID, br.BRCPTCODE AS cpt_code
-    FROM V_S_LAB_TEST_COMPONENT tc
-    JOIN V_S_ARE_BILLRULES br ON br.BRTSTCODE = tc.COMPONENT
-                              AND br.BRSTAT = 0
-                              AND br.BRCPTCODE IS NOT NULL
-                              AND (br.BREXPDT IS NULL OR br.BREXPDT > SYSDATE)
-                              AND (br.BRBEGDT IS NULL OR br.BRBEGDT <= SYSDATE)
-    WHERE NOT EXISTS (
-        SELECT 1 FROM parent_cpt pc WHERE pc.TEST_AA_ID = tc.TEST_AA_ID
+        WHERE NVL(ws.REF_LAB, 0) = 0
     )
+    GROUP BY TEST_ID
 ),
 
--- 4c. Combine parent and component CPTs
-cpt_codes AS (
+-- 3. CPT Codes: from SoftAR BILLRULES (authoritative source)
+test_cpt AS (
     SELECT
-        TEST_AA_ID,
+        TEST_ID,
         LISTAGG(cpt_code, ', ' ON OVERFLOW TRUNCATE '...' WITHOUT COUNT)
             WITHIN GROUP (ORDER BY cpt_code) AS cpt_list
     FROM (
-        SELECT TEST_AA_ID, cpt_code FROM parent_cpt
-        UNION
-        SELECT TEST_AA_ID, cpt_code FROM component_cpt
+        SELECT DISTINCT br.BRTSTCODE AS TEST_ID, br.BRCPTCODE AS cpt_code
+        FROM V_S_ARE_BILLRULES br
+        WHERE br.BRSTAT = 0
+          AND br.BRCPTCODE IS NOT NULL
+          AND (br.BREXPDT IS NULL OR br.BREXPDT > SYSDATE)
+          AND (br.BRBEGDT IS NULL OR br.BRBEGDT <= SYSDATE)
     )
-    GROUP BY TEST_AA_ID
+    GROUP BY TEST_ID
 ),
 
--- 5. Collection Containers: primary from group specimen, fallback from test specimen
+-- 4. Collection Containers per individual test
 containers AS (
     SELECT
-        TEST_AA_ID,
+        TEST_ID,
         LISTAGG(tube_name, ', ' ON OVERFLOW TRUNCATE '...' WITHOUT COUNT)
             WITHIN GROUP (ORDER BY tube_name) AS container_list
     FROM (
-        -- Primary: group-level specimen requirements
-        SELECT DISTINCT gs.TEST_AA_ID, sp.NAME AS tube_name
-        FROM V_S_LAB_TEST_GROUP_SPECIMEN gs
-        JOIN V_S_LAB_SPECIMEN sp ON sp.ID = gs.SAMPLE_TYPE
-        UNION
-        -- Fallback: component-level specimen requirements (per test/workstation)
-        SELECT DISTINCT tc.TEST_AA_ID, sp.NAME AS tube_name
-        FROM V_S_LAB_TEST_COMPONENT tc
-        JOIN V_S_LAB_TEST_SPECIMEN ts ON ts.TEST_ID = tc.COMPONENT
-                                      AND ts.COLLECTION_CONTAINER IS NOT NULL
+        SELECT DISTINCT ts.TEST_ID, sp.NAME AS tube_name
+        FROM V_S_LAB_TEST_SPECIMEN ts
         JOIN V_S_LAB_SPECIMEN sp ON sp.ID = ts.COLLECTION_CONTAINER
+        WHERE ts.COLLECTION_CONTAINER IS NOT NULL
     )
-    GROUP BY TEST_AA_ID
+    GROUP BY TEST_ID
 )
 
--- Main query: one row per unique test code
+-- Main query: one row per individual test
 SELECT
-    gtg.ID                          AS "LIS Order Code",
-    gtg.GTNAME_UPPER                AS "Name",
-    pl.lab_list                     AS "Labs Performing Test",
-    sec.section_list                AS "Section in Lab",
-    an.analyte_list                 AS "Analytes Included in Order",
-    cpt.cpt_list                    AS "CPT Code(s)",
-    CASE WHEN EXISTS (SELECT 1 FROM parent_cpt pc WHERE pc.TEST_AA_ID = gtg.AA_ID)
-         THEN 'Parent'
-         WHEN EXISTS (SELECT 1 FROM component_cpt cc WHERE cc.TEST_AA_ID = gtg.AA_ID)
-         THEN 'Component'
-         ELSE NULL
-    END                             AS "Billing Level",
-    CASE WHEN gtg.FL_SEND_OUT = 'Y'
-         THEN 'Yes' ELSE NULL
-    END                             AS "Lab Only?",
-    con.container_list              AS "Collection Containers"
-FROM group_tests gtg
-LEFT JOIN analytes an          ON an.TEST_AA_ID = gtg.AA_ID
-LEFT JOIN performing_labs pl   ON pl.TEST_AA_ID = gtg.AA_ID
-LEFT JOIN sections sec         ON sec.TEST_AA_ID = gtg.AA_ID
-LEFT JOIN cpt_codes cpt        ON cpt.TEST_AA_ID = gtg.AA_ID
-LEFT JOIN containers con       ON con.TEST_AA_ID = gtg.AA_ID
-ORDER BY gtg.ID;
+    t.NAME                                    AS "Test Name",
+    t.ID                                      AS "Test Code",
+    t.LOINC                                   AS "LOINC Code",
+    t.UNITS                                   AS "Unit of Measure",
+    t.RESULT_TYPE                             AS "Result Type",
+    d.NAME                                    AS "Section in Lab",
+    icfg.instrument_list                      AS "Instruments (Configured)",
+    iact.instrument_list                      AS "Instruments (Active)",
+    pl.lab_list                               AS "Labs Performing Test",
+    tcpt.cpt_list                             AS "CPT Code(s)",
+    con.container_list                        AS "Collection Containers"
+FROM tests t
+LEFT JOIN V_S_LAB_DEPARTMENT d     ON d.ID = t.DEPARTMENT_ID
+LEFT JOIN instruments_configured icfg ON icfg.TEST_ID = t.ID
+LEFT JOIN instruments_active iact  ON iact.TEST_ID = t.ID
+LEFT JOIN performing_labs pl       ON pl.TEST_ID = t.ID
+LEFT JOIN test_cpt tcpt            ON tcpt.TEST_ID = t.ID
+LEFT JOIN containers con           ON con.TEST_ID = t.ID
+ORDER BY t.ID;
