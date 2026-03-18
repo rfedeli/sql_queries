@@ -1386,6 +1386,59 @@ V_P_ARE_BILLERROR.BERCODE → V_S_ARE_ARERROR.ERRCODE  (error definition lookup;
 
 ---
 
+## SoftMic (Microbiology) Views — Detail
+
+### V_S_MIC_ORGANISM — Organism setup/reference
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 22 | PK |
+| ID | VARCHAR2 7 | Organism code |
+| NAME_SHORT | VARCHAR2 31 | Short name |
+| NAME | VARCHAR2 59 | Full organism name (e.g., "STAPHYLOCOCCUS AUREUS") |
+| SECONDARY_ID | VARCHAR2 7 | Secondary identifier |
+| INFECTIOUS_ORG | CHAR 1 | Infectious organism flag |
+| SNOMED | VARCHAR2 18 | SNOMED code |
+| ACTIVE | VARCHAR2 1 | Active flag (Y/N) |
+| IS_CLASS | VARCHAR2 1 | Is-class flag |
+| MULTIPLE_RESIST | NUMBER 22 | Multiple resistance flag |
+| NO_DAYS_FOR_NOSO | NUMBER 22 | Days for nosocomial classification |
+
+#### Classification Flag Columns (all VARCHAR2 1)
+
+| Column | Description |
+|--------|-------------|
+| Q_VIRUS | Virus flag |
+| R_FUNGI | Fungus flag |
+| O1VIRUS | Virus flag (alternate, CHAR 1) |
+| A_GRAMPOS | Gram-positive bacteria |
+| B_GRAMNEG | Gram-negative bacteria |
+| C_GRAMVAR | Gram-variable bacteria |
+| N_COCUS | Coccus morphology |
+| O_BACILLUS | Bacillus morphology |
+| STANDARDDEVIATIONRULES | Standard deviation rules flag |
+| AUTOORDERSENSITIVITYTEST | Auto-order sensitivity test flag |
+| SUPPRESSFROMREPORTING | Suppress from reporting flag |
+
+#### Sensitivity Panel Flags (all VARCHAR2 1)
+
+Single-letter columns (S, T, U, V, W, X, Y, Z, A1–Z1, D–P, F_0–F_9, ZZ1, ZZ2) are sensitivity panel assignment flags.
+
+#### Alternate Organism Codes
+
+| Column | Type | Description |
+|--------|------|-------------|
+| ALTORG_0–3 | VARCHAR2 7 | Alternate organism codes |
+| O1ALTORG_0–3 | VARCHAR2 7 | Additional alternate organism codes |
+| SECID_OPTKEY | VARCHAR2 | Secondary ID option key |
+
+**Notes:**
+- Genus and species are not stored separately — parse from `NAME` using `REGEXP_SUBSTR`.
+- Organism type is derived from classification flags (`Q_VIRUS`, `R_FUNGI`, `A_GRAMPOS`, `B_GRAMNEG`, `C_GRAMVAR`).
+- Yeasts (e.g., Candida) fall under `R_FUNGI`.
+
+---
+
 ## Not Found in Dictionaries
 
 | View | Notes |
