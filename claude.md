@@ -1240,6 +1240,28 @@ V_P_ARE_BILLERROR.BERCODE → V_S_ARE_ARERROR.ERRCODE  (error definition lookup;
 - When `BERCODE` is NULL, SCC treats it as error code `'IN75'` (not billed/invoiced) — look up in `V_S_ARE_ARERROR`.
 - Do NOT pre-filter errors by `ERRACTION` — even Warning-level errors can block bill delivery. Show all errors and let the user assess.
 
+### V_P_ARE_AUDITTRAIL — Field-level change audit log
+
+| Column | Type | Description |
+|--------|------|-------------|
+| ATINTN | NUMBER 22 | PK — audit entry internal number |
+| ATTABLE | VARCHAR2 20 | Entity/table that was changed (e.g., 'Item', 'Visit', 'Invoice', 'Account') |
+| ATROWINTN | NUMBER 22 | FK — internal number of the changed row (e.g., ITINTN for Item, VTINTN for Visit) |
+| ATDESC | NVARCHAR2 4000 | Description of the change |
+| ATUSER | VARCHAR2 16 | User who made the change (e.g., 'scc' = system, user IDs for manual changes) |
+| ATDATE | DATE | Date/time of the change |
+| ATFIELD | VARCHAR2 30 | Specific field that was changed (e.g., 'itcptmod0', 'itunits', 'vtstat') |
+| ATOLD | NVARCHAR2 4000 | Previous value |
+| ATNEW | NVARCHAR2 4000 | New value |
+| ATPRNTINTN | NUMBER 22 | Parent internal number |
+
+**Notes:**
+- Field-level audit trail — each row represents one field change on one record.
+- `ATTABLE` values include: `Gp_insur` (most common), `VisitProc`, `Visit`, `Account`, `Trans`, `Invoice`, `Problem`, `Item`, `Batch`, `VisitDiag`, `VprItLink`, `Test`, `ActionToInform`, `Person`, `Payor`, `Trtype`, `ArCfg`.
+- **Item (V_P_ARE_ITEM) tracked fields:** `itunits` (~143K), `itccitintn` (~31K), `itcptmod0` (~26K), `itinfo` (~25K), `itwrkst` (~7K), `itdepcode` (~2K), `itsrvdt`/`itsrvdtto` (~2K each), `itward` (~2K), `itreqdccode`, `itabn`.
+- **Modifier audit:** Join `ATROWINTN → V_P_ARE_ITEM.ITINTN` WHERE `ATTABLE = 'Item'` AND `ATFIELD = 'itcptmod0'` to get who added/changed a modifier and when.
+- `V_P_ARE_AUDITTRAILTECH` has identical structure — likely captures system/automated changes vs user-initiated changes.
+
 ### V_S_ARE_ARERROR — AR error code definitions
 
 | Column | Type | Description |
