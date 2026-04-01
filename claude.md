@@ -1461,6 +1461,56 @@ Single-letter columns (S, T, U, V, W, X, Y, Z, A1–Z1, D–P, F_0–F_9, ZZ1, Z
 
 ---
 
+## Instrument Interface Views — Detail
+
+### V_S_INST_INSTRUMENT — Instrument interface definitions
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 14 | PK |
+| ID | VARCHAR2 | Instrument code (e.g., TREM, TCEPH, TALIN) |
+| NAME | VARCHAR2 | Instrument name (e.g., "Remisol", "Cepheid GeneXpert", "Alinity i") |
+| ACTIVE | VARCHAR2 1 | Status: Y=Active, A=Active (auto-service/server), N=Inactive |
+| ORD_WORKSTATION_ID | VARCHAR2 | Ordering workstation code (FK → V_S_LAB_WORKSTATION.ID) |
+| RES_WORKSTATION_ID | VARCHAR2 | Result workstation code (FK → V_S_LAB_WORKSTATION.ID) |
+| INSTR_IDL | VARCHAR2 | Instrument IDL (often matches ID) |
+| LISTN_NAME | VARCHAR2 | Listener/driver name (e.g., GenInst, astmGen, genref, phoresis, clinitek) |
+| PORT_NAME | VARCHAR2 | Connection string (serial port, TCP socket, or config reference) |
+| TEMPLATE_ID | VARCHAR2 | Template workstation ID |
+| CHAPTER | VARCHAR2 | Chapter code |
+| CREATE_DATE | NUMBER | Creation date (YYYYMMDD format, stored as number) |
+| MOD_DATE | NUMBER | Last modified date (YYYYMMDD format, stored as number) |
+| DATA_FILE | VARCHAR2 | Data file name |
+| DIR_LSTN | VARCHAR2 | Listener directory |
+| DIR_NAME | VARCHAR2 | Interface directory path (e.g., I/TREM, I/QUEST, I/AUTO) |
+| INST_DEP_1 | VARCHAR2 | Dependency 1 (related instrument/process) |
+| INST_DEP_2 | VARCHAR2 | Dependency 2 |
+| FLAGS | BLOB | Binary flags (internal) |
+| LOADL_FILE | VARCHAR2 | Load file (e.g., dbildl for bi-directional instruments) |
+| MAX_CUP | NUMBER | Max cup/position number |
+| MAX_SEQ | NUMBER | Max sequence number |
+| MAX_TORDER | NUMBER | Max test orders |
+| MAX_TRAY | NUMBER | Max tray number |
+| TRACE_FILE | VARCHAR2 | Trace/log file name |
+| VALIDATE_MRN_AT_POSTING | VARCHAR2 1 | Validate MRN at posting (Y/N) |
+| VALIDATE_BILL_AT_POSTING | VARCHAR2 1 | Validate billing at posting (Y/N) |
+| INSTRUMENT_TYPE | VARCHAR2 | Instrument type/department: CHEMISTRY, HEMATOLOGY, MICROBIOLOGY, HIS |
+| INSTRUMENT_FLAG | VARCHAR2 | Instrument flag: BI_MSG, BI_NO_MSQ, BI_NO_LDL, UNI_NO_LDL, UNI_LDL |
+| FL0–FL71_* | VARCHAR2 1 | Feature flags (Y/N) — 70+ boolean flags controlling instrument behavior |
+
+**Notes:**
+- `INSTRUMENT_TYPE` categorizes the interface: `CHEMISTRY`, `HEMATOLOGY`, `MICROBIOLOGY` are lab analyzers; `HIS` covers system infrastructure (ADT, order entry, billing, ESB, auto-reporting, label servers, etc.).
+- `ACTIVE = 'A'` is used for auto-services/servers (auto-reporting, tracking, RBS, label servers, monitoring); `'Y'` for standard active instruments; `'N'` for inactive/retired.
+- `INSTRUMENT_FLAG` values: `BI_MSG` = bidirectional with messages, `BI_NO_MSQ` = bidirectional no message queue, `BI_NO_LDL` = bidirectional no load list, `UNI_NO_LDL` = unidirectional no load list, `UNI_LDL` = unidirectional with load list.
+- `CREATE_DATE` and `MOD_DATE` are stored as NUMBER in YYYYMMDD format (not Oracle DATE type).
+- `LOADL_FILE = 'dbildl'` indicates the instrument supports bi-directional download.
+- `PORT_NAME` contains connection info: serial ports (`/dev/tty*`), TCP sockets (`:host:port ID`), config file references, or "see [other instrument]" cross-references for instruments sharing a middleware connection (e.g., Remisol).
+- Many analyzers share a middleware connection (e.g., multiple Beckman AU/DxC/Access instruments route through a single Remisol interface like TREM, JREM, EREM, FREM, WFREM).
+- Reference lab interfaces (Quest, Viracor, HistoTrac) use `LISTN_NAME = 'genref'` and `DIR_NAME` like `I/QUEST`, `I/TVCOR`, `I/HIST`.
+- `ORD_WORKSTATION_ID` and `RES_WORKSTATION_ID` link to V_S_LAB_WORKSTATION for mapping instruments to SoftLab workstations.
+
+---
+
 ## Not Found in Dictionaries
 
 | View | Notes |
