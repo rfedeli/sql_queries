@@ -1,0 +1,54 @@
+-- Add-on orders/tests for PATHC test
+-- Parameters:
+--   :START_DATE - Start date in YYYYMMDD format
+--   :END_DATE   - End date in YYYYMMDD format
+SELECT
+    o.ID AS order_no,
+    p.ID AS mrn,
+    p.LAST_NAME,
+    p.FIRST_NAME,
+    ot.TEST_ID,
+    ot.WORKSTATION_ID,
+    ot.TRIAGE_STATUS,
+    ot.ORDERING_DT,
+    CASE WHEN tr.RESULT = 'Cancelled' THEN 'Y' ELSE 'N' END AS cancelled
+FROM V_P_LAB_ORDERED_TEST ot
+JOIN V_P_LAB_ORDER o
+    ON o.AA_ID = ot.ORDER_AA_ID
+JOIN V_P_LAB_STAY s
+    ON s.AA_ID = o.STAY_AA_ID
+JOIN V_P_LAB_PATIENT p
+    ON p.AA_ID = s.PATIENT_AA_ID
+JOIN V_P_LAB_TEST_RESULT tr
+    ON tr.ORDER_AA_ID = ot.ORDER_AA_ID
+    AND tr.GROUP_TEST_ID = ot.TEST_ID
+    AND tr.ORDERING_WORKSTATION_ID = ot.WORKSTATION_ID
+WHERE ot.TEST_ID = 'PATHC'
+    AND REGEXP_LIKE(p.ID, '^E[0-9]+$')
+    AND ot.ORDERING_DT >= TO_DATE(:START_DATE, 'YYYYMMDD')
+    AND ot.ORDERING_DT < TO_DATE(:END_DATE, 'YYYYMMDD') + 1
+ORDER BY ot.ORDERING_DT DESC;
+
+-- PATHC add-on totals by month (active vs cancelled)
+SELECT
+    TO_CHAR(ot.ORDERING_DT, 'YYYY-MM') AS order_month,
+    COUNT(CASE WHEN tr.RESULT != 'Cancelled' OR tr.RESULT IS NULL THEN 1 END) AS active_pathc,
+    COUNT(CASE WHEN tr.RESULT = 'Cancelled' THEN 1 END) AS cancelled_pathc,
+    COUNT(*) AS total_pathc
+FROM V_P_LAB_ORDERED_TEST ot
+JOIN V_P_LAB_ORDER o
+    ON o.AA_ID = ot.ORDER_AA_ID
+JOIN V_P_LAB_STAY s
+    ON s.AA_ID = o.STAY_AA_ID
+JOIN V_P_LAB_PATIENT p
+    ON p.AA_ID = s.PATIENT_AA_ID
+JOIN V_P_LAB_TEST_RESULT tr
+    ON tr.ORDER_AA_ID = ot.ORDER_AA_ID
+    AND tr.GROUP_TEST_ID = ot.TEST_ID
+    AND tr.ORDERING_WORKSTATION_ID = ot.WORKSTATION_ID
+WHERE ot.TEST_ID = 'PATHC'
+    AND REGEXP_LIKE(p.ID, '^E[0-9]+$')
+    AND ot.ORDERING_DT >= TO_DATE(:START_DATE, 'YYYYMMDD')
+    AND ot.ORDERING_DT < TO_DATE(:END_DATE, 'YYYYMMDD') + 1
+GROUP BY TO_CHAR(ot.ORDERING_DT, 'YYYY-MM')
+ORDER BY order_month

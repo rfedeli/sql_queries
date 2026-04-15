@@ -144,7 +144,7 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 |--------|------|-------------|
 | AA_ID | NUMBER 14 | PK |
 | PATIENT_AA_ID | NUMBER 14 | FK → V_P_LAB_PATIENT.AA_ID |
-| BILLING | VARCHAR2 23 | Billing number |
+| BILLING | VARCHAR2 23 | Epic CSN (Contact Serial Number) — encounter identifier from Epic HIS |
 | CLINIC_ID | VARCHAR2 15 | Clinic id |
 | ROOM | VARCHAR2 7 | Room |
 | BED | VARCHAR2 3 | Bed |
@@ -283,6 +283,29 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 | RECEIPT_TECH | VARCHAR2 16 | Receipt tech |
 | RECEIPT_LOC | VARCHAR2 11 | Receipt location |
 | DELIVERY_LOC | VARCHAR2 20 | Delivery location |
+
+### V_P_LAB_MISCEL_INFO — Patient/Stay/Order additional data
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 22 | PK (NOT NULL) |
+| OWNER_ID | VARCHAR2 23 | Owner identifier (joins to V_P_LAB_STAY.BILLING) |
+| PATIENT_DATA | VARCHAR2 1 | Flag: record is patient-level data |
+| STAY_DATA | VARCHAR2 1 | Flag: record is stay-level data |
+| ORDER_DATA | VARCHAR2 1 | Flag: record is order-level data |
+| SUB_ID | VARCHAR2 20 | Sub-identifier / field label (e.g., 'Exp Disch') |
+| ID | VARCHAR2 20 | Secondary identifier |
+| ADD_DATE | NUMBER 22 | Added date (numeric YYYYMMDD format) |
+| ADD_TIME | NUMBER 22 | Added time (numeric HHMM format) |
+| ADD_DT | DATE | Added date/time (Oracle DATE) |
+| ADD_TECH | VARCHAR2 16 | Added by technologist |
+| VALUE | VARCHAR2 39 | Stored value |
+
+**Notes:**
+- This is a key-value style table for miscellaneous HIS data attached to patients, stays, or orders.
+- Join to stays via `OWNER_ID = V_P_LAB_STAY.BILLING`.
+- `SUB_ID` acts as the field name/label; `VALUE` holds the data.
+- Use `PATIENT_DATA`, `STAY_DATA`, `ORDER_DATA` flags to identify the entity level.
 
 ### V_P_LAB_TUBEINFO — Specimen tube info (denormalized)
 

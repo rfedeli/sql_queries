@@ -1,0 +1,20 @@
+SELECT
+    t.ID              AS TEST_ID,
+    t.NAME            AS TEST_NAME,
+    t.ACTIVE,
+    t.DEPARTMENT_ID,
+    d.NAME            AS DEPARTMENT_NAME,
+    d.LOCATION_ID,
+    CASE
+      WHEN d.NAME LIKE '%MICROBIOLOGY%'
+        OR d.NAME LIKE '%VIROLOGY%'
+        OR EXISTS (SELECT 1 FROM V_S_LAB_TEST_MICLINKTESTS m WHERE m.TEST_AA_ID = t.AA_ID)
+      THEN 'SoftMic'
+      ELSE 'SoftLab'
+    END               AS MODULE
+FROM V_S_LAB_TEST t
+LEFT JOIN V_S_LAB_DEPARTMENT d
+  ON d.ID = t.DEPARTMENT_ID
+WHERE t.ACTIVE = 'Y'
+ORDER BY MODULE, d.NAME, t.ID;
+    
