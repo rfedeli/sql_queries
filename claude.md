@@ -684,7 +684,7 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 | LOCATION | CHAR 1 | Location code |
 | CONTAINER | VARCHAR2 8 | Container type restriction |
 | LOC_DEPT_WRKSTN | VARCHAR2 | Location / department / workstation scope |
-| TERMINAL | VARCHAR2 11 | **Location code** (matches V_S_LAB_COLL_CENTER.ID / COLLECTION_LOCATION — e.g., T1, J1, F1, C1, TREM, QUEST). NOT a device ID. |
+| TERMINAL | VARCHAR2 11 | Scope for this setup row — per SCC manual, may be **(a)** a specific terminal ID (FK → V_S_LAB_TERMINAL.TERMINAL), **(b)** an OL/CC / Region code (FK → V_S_LAB_COLL_CENTER.ID — e.g., T1, J1, F1, C1, TREM, QUEST), or **(c)** `*` for global. Most rows in practice are OL/CC-scoped. |
 | STATUS | VARCHAR2 8 | Specimen status filter for this row |
 | PLACE | VARCHAR2 11 | Place code (FK → V_S_LAB_SPTR_STOP.PLACE) |
 | TYPE | CHAR 1 | Setup type |
@@ -692,10 +692,17 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 | HIDE | VARCHAR2 1 | Hide flag (Y/N) — controls whether this row is hidden at this location |
 
 **Notes:**
-- **`TERMINAL` here is a misnomer — it holds a location/collection-center code (T1, J1, F1, C1, E1, W1, TREM, QUEST, etc.), NOT a device/PC ID.** Confirmed values from production: Temple (T1–T7), Jeanes (J1–J2), Fox Chase (F1–F3), Chestnut Hill (C1–C2), Episcopal (E1), Women & Families (W1–W2), instruments (TREM), reference labs (QUEST), plus service-area codes (EACT, ECLIN, TACC1, etc.).
-- One row per LOCATION per PLACE/POSITION — defines tracking actions at each physical location, not per-device.
-- To compare two PCs' specimen-tracking config: first resolve each PC's `COLL_CENTER_ID` from `V_S_LAB_TERMINAL`, then compare SPTR_SETUP rows for those center codes. If the two PCs share a `COLL_CENTER_ID`, their SPTR_SETUP is identical and any functional difference between them lives elsewhere (label printer setup, workstation assignment, OS, etc.).
-- Join `V_S_LAB_SPTR_SETUP.PLACE = V_S_LAB_SPTR_STOP.PLACE` to get the specimen status/location rules associated with the place.
+- **`TERMINAL` column is the scope key** — can be a specific device ID (FK → V_S_LAB_TERMINAL.TERMINAL), an OL/CC code (FK → V_S_LAB_COLL_CENTER.ID like T1, J1, F1, TREM, QUEST), or `*` for global. In practice most rows are OL/CC-scoped.
+- **Diagnosing a "broken" terminal (per SCC manual workflow):**
+  1. Find the PC's actual terminal ID (SoftLab client Help → About, or INI/registry on the PC — not stored in the DB).
+  2. Verify in `V_S_LAB_TERMINAL` that the ID is registered to the correct `COLL_CENTER_ID`.
+  3. Query `V_S_LAB_SPTR_SETUP WHERE TERMINAL = <id>` — returns device-specific overrides (often empty).
+  4. Query `V_S_LAB_SPTR_SETUP WHERE TERMINAL = <coll_center_id>` — returns the OL/CC-scoped rows the device inherits.
+  5. Also include `TERMINAL = '*'` rows for globally-scoped stops.
+  6. If two PCs share COLL_CENTER_ID and neither has device-specific rows, SPTR is identical and the broken-vs-working difference is outside SCC (client INI, printer/scanner drivers, hostname-derived terminal ID misregistration, etc.).
+- Fix path if setup IS missing: SoftLab → Specimen Tracking Setup → Specimen Setup tab (F7 Edit), use **Copy Group / Find > Copy** to clone a known-good terminal's rows onto the broken one.
+- Join `V_S_LAB_SPTR_SETUP.PLACE = V_S_LAB_SPTR_STOP.PLACE` to get specimen status/location rules for a place.
+- Confirmed location codes in production: Temple (T1–T7), Jeanes (J1–J2), Fox Chase (F1–F3), Chestnut Hill (C1–C2), Episcopal (E1), Women & Families (W1–W2), instruments (TREM), reference labs (QUEST), plus service-area codes (EACT, ECLIN, TACC1, etc.).
 
 ### V_S_LAB_SPTR_STOP — Specimen tracking stop/place definition
 
