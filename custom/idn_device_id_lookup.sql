@@ -1,0 +1,11 @@
+-- Resolve the short TERMINAL_ID to the long DEVICE_ID used by the IDN module.
+-- V_P_IDN_LOG has both columns, so it maps them for us.
+SELECT TERMINAL_ID,
+       DEVICE_ID,
+       COUNT(*) AS LOG_ROWS,
+       MIN(LOG_DT) AS FIRST_SEEN,
+       MAX(LOG_DT) AS LAST_SEEN
+FROM V_P_IDN_LOG
+WHERE TERMINAL_ID IN ('EE7EE','49601')
+GROUP BY TERMINAL_ID, DEVICE_ID
+ORDER BY TERMINAL_ID, LAST_SEEN DESC;

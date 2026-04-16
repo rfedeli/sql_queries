@@ -1,0 +1,23 @@
+-- What's actually in the IDN log? Sample identifiers to understand the namespace.
+SELECT TERMINAL_ID, DEVICE_ID, COUNT(*) AS N
+FROM V_P_IDN_LOG
+WHERE LOG_DT >= SYSDATE - 7
+GROUP BY TERMINAL_ID, DEVICE_ID
+ORDER BY N DESC;
+
+-- Does the short TERMINAL code (or its NAME) show up in any IDN identifier?
+SELECT *
+FROM (
+  SELECT DISTINCT TERMINAL_ID, DEVICE_ID
+  FROM V_P_IDN_LOG
+  WHERE UPPER(TERMINAL_ID) LIKE '%EE7%'
+     OR UPPER(TERMINAL_ID) LIKE '%49601%'
+     OR UPPER(DEVICE_ID)   LIKE '%EE7%'
+     OR UPPER(DEVICE_ID)   LIKE '%49601%'
+)
+WHERE ROWNUM <= 20;
+
+-- Show V_S_LAB_TERMINAL record for both devices (maybe the NAME is the key IDN uses)
+SELECT TERMINAL, NAME, COLL_CENTER_ID, FORCEBYTERM
+FROM V_S_LAB_TERMINAL
+WHERE TERMINAL IN ('EE7EE','49601');

@@ -1,7 +1,9 @@
--- Side-by-side diff of two terminals' specimen-tracking configuration.
--- Pivots V_S_LAB_SPTR_SETUP on (PLACE, POSITION) so matching rows line up,
--- and flags DIFFERS = 'Y' when any compared field disagrees (or one side is missing).
--- Replace :term_a / :term_b with the two terminal IDs.
+-- Side-by-side diff of two LOCATIONS' specimen-tracking configuration.
+-- Note: V_S_LAB_SPTR_SETUP.TERMINAL holds location codes (T1, J1, F1, etc.),
+-- not device/PC IDs — so this diffs per-location setup, not per-device.
+-- Pivots on (PLACE, POSITION) so matching rows line up; flags DIFFERS='Y'
+-- when any compared field disagrees (or one side is missing).
+-- Bind :term_a and :term_b to the two location codes to compare.
 SELECT
     NVL(a.PLACE, b.PLACE)                                 AS PLACE,
     NVL(a.POSITION, b.POSITION)                           AS POSITION,
