@@ -660,6 +660,91 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 - Child of `V_S_LAB_SPECIMEN` — provides capacity/volume specs per tube type.
 - Not a container name lookup table — use `V_S_LAB_SPECIMEN` for tube names.
 
+### V_S_LAB_TERMINAL — Terminal (device) registration per collection center
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 22 | PK |
+| COLL_CENTER_ID | VARCHAR2 11 | FK → V_S_LAB_COLL_CENTER.ID (collection center this terminal belongs to) |
+| TERMINAL | VARCHAR2 7 | Terminal ID / device name (short form) |
+| NAME | VARCHAR2 51 | Terminal description / long name |
+| FORCEBYTERM | VARCHAR2 | "Force by terminal" flag |
+
+**Notes:**
+- `V_S_LAB_TERMINAL.TERMINAL` is the short terminal code; the same ID appears in `V_S_LAB_SPTR_SETUP.TERMINAL` and `V_S_LAB_LBL_SETUP.TERMINAL`.
+
+### V_S_LAB_SPTR_SETUP — Specimen tracking setup (per terminal)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 22 | PK |
+| POSITION | VARCHAR2 | Row position / ordering within the terminal's tracking screen |
+| SETUP_OPTION | NUMBER 22 | Setup option code |
+| LOCATION | CHAR 1 | Location code |
+| CONTAINER | VARCHAR2 8 | Container type restriction |
+| LOC_DEPT_WRKSTN | VARCHAR2 | Location / department / workstation scope |
+| TERMINAL | VARCHAR2 11 | Terminal ID (FK → V_S_LAB_TERMINAL.TERMINAL) |
+| STATUS | VARCHAR2 8 | Specimen status filter for this row |
+| PLACE | VARCHAR2 11 | Place code (FK → V_S_LAB_SPTR_STOP.PLACE) |
+| TYPE | CHAR 1 | Setup type |
+| ACTIONS | VARCHAR2 29 | Actions enabled on this setup row |
+| HIDE | VARCHAR2 1 | Hide flag (Y/N) — controls whether this row is hidden on the terminal |
+
+**Notes:**
+- One row per terminal per PLACE/POSITION — defines what tracking actions the terminal can perform at each place.
+- Join `V_S_LAB_SPTR_SETUP.PLACE = V_S_LAB_SPTR_STOP.PLACE` to get the specimen status/location rules associated with the place.
+- Key columns for comparing two terminals' behavior: `STATUS`, `ACTIONS`, `HIDE`, `LOCATION`, `CONTAINER`, `LOC_DEPT_WRKSTN`, `TYPE`, `SETUP_OPTION`.
+
+### V_S_LAB_SPTR_STOP — Specimen tracking stop/place definition
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 22 | PK |
+| SPECIMEN_STATUS | VARCHAR2 8 | Specimen status code this stop applies to |
+| SPECIMEN_LOCATION | CHAR 1 | Specimen location code |
+| PLACE | VARCHAR2 11 | Place code (unique stop identifier) |
+| DESCRIPTION | VARCHAR2 29 | Stop description |
+| ACTIONS | VARCHAR2 29 | Default actions at this stop |
+| PHYSICAL_LOCATION_TYPE | CHAR 1 | Physical location type |
+| PHYSICAL_LOCATION_CODE | VARCHAR2 7 | Physical location code |
+| TIME_LIMIT | VARCHAR2 | Max allowed time at this stop |
+| SORT | VARCHAR2 5 | Sort order |
+| NEXT_STATUS | VARCHAR2 8 | Next specimen status (workflow transition) |
+| NEXT_LOCATION | CHAR 1 | Next specimen location |
+| NEXT_PLACE | VARCHAR2 11 | Next place in workflow |
+| CONTAINER_TYPE | VARCHAR2 8 | Container type restriction |
+| WORKSTATION | VARCHAR2 | Workstation at this stop |
+| LIST_AVAILABLE | VARCHAR2 1 | List-available flag (Y/N) |
+| NEW_LIST_DAILY | CHAR 1 | New-list-daily flag |
+| REMOTE_RECEIVING_ONLY | VARCHAR2 1 | Remote-receiving-only flag |
+| WORKSTATION_IS_IN_TYPE | CHAR 1 | Workstation-in-type flag |
+
+**Notes:**
+- Defines the specimen-tracking workflow: each PLACE has a specimen status + location and points to the NEXT_STATUS/NEXT_LOCATION/NEXT_PLACE.
+- Join via `V_S_LAB_SPTR_SETUP.PLACE = V_S_LAB_SPTR_STOP.PLACE` to link a terminal's setup rows to the workflow rules.
+
+### V_S_LAB_SPTR_LOCATION — Specimen tracking location codes
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 22 | PK |
+| POSITION | CHAR 1 | Sort position |
+| CODE | CHAR 1 | Location code (single character) |
+| DESCRIPTION | VARCHAR2 29 | Location description |
+| HELP | VARCHAR2 7 | Help text |
+| LOOKUP | VARCHAR2 7 | Lookup key |
+| LOCATION_COMMENT | VARCHAR2 29 | Comment |
+
+### V_S_LAB_SPTR_STATUS — Specimen tracking status codes
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 22 | PK |
+| POSITION | VARCHAR2 8 | Sort position |
+| CODE | VARCHAR2 8 | Status code |
+| DESCRIPTION | VARCHAR2 29 | Status description |
+| NOT_UNIQUE_WARNING_FLAG | CHAR 1 | Not-unique-warning flag |
+
 ### V_S_LAB_TEST — Individual/component test setup
 
 Large table (100+ columns). Key columns grouped by category below.
