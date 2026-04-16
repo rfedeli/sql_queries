@@ -660,18 +660,19 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 - Child of `V_S_LAB_SPECIMEN` — provides capacity/volume specs per tube type.
 - Not a container name lookup table — use `V_S_LAB_SPECIMEN` for tube names.
 
-### V_S_LAB_TERMINAL — Terminal (device) registration per collection center
+### V_S_LAB_TERMINAL — Device/terminal registration per collection center
 
 | Column | Type | Description |
 |--------|------|-------------|
 | AA_ID | NUMBER 22 | PK |
-| COLL_CENTER_ID | VARCHAR2 11 | FK → V_S_LAB_COLL_CENTER.ID (collection center this terminal belongs to) |
-| TERMINAL | VARCHAR2 7 | Terminal ID / device name (short form) |
-| NAME | VARCHAR2 51 | Terminal description / long name |
+| COLL_CENTER_ID | VARCHAR2 11 | FK → V_S_LAB_COLL_CENTER.ID (collection center this device belongs to) |
+| TERMINAL | VARCHAR2 7 | Device/terminal ID (per-PC or per-device short code) |
+| NAME | VARCHAR2 51 | Device description / long name |
 | FORCEBYTERM | VARCHAR2 | "Force by terminal" flag |
 
 **Notes:**
-- `V_S_LAB_TERMINAL.TERMINAL` is the short terminal code; the same ID appears in `V_S_LAB_SPTR_SETUP.TERMINAL` and `V_S_LAB_LBL_SETUP.TERMINAL`.
+- This IS the device-level registry — one row per physical PC/terminal, each mapped to a `COLL_CENTER_ID`.
+- **Do NOT confuse with `V_S_LAB_SPTR_SETUP.TERMINAL`** — that column stores *location* codes (T1, J1, F1, etc.), not device IDs. To compare specimen-tracking setup between two devices, look up each device's `COLL_CENTER_ID` here first, then feed those values into `V_S_LAB_SPTR_SETUP.TERMINAL`.
 
 ### V_S_LAB_SPTR_SETUP — Specimen tracking setup (per terminal)
 
@@ -683,17 +684,18 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 | LOCATION | CHAR 1 | Location code |
 | CONTAINER | VARCHAR2 8 | Container type restriction |
 | LOC_DEPT_WRKSTN | VARCHAR2 | Location / department / workstation scope |
-| TERMINAL | VARCHAR2 11 | Terminal ID (FK → V_S_LAB_TERMINAL.TERMINAL) |
+| TERMINAL | VARCHAR2 11 | **Location code** (matches V_S_LAB_COLL_CENTER.ID / COLLECTION_LOCATION — e.g., T1, J1, F1, C1, TREM, QUEST). NOT a device ID. |
 | STATUS | VARCHAR2 8 | Specimen status filter for this row |
 | PLACE | VARCHAR2 11 | Place code (FK → V_S_LAB_SPTR_STOP.PLACE) |
 | TYPE | CHAR 1 | Setup type |
 | ACTIONS | VARCHAR2 29 | Actions enabled on this setup row |
-| HIDE | VARCHAR2 1 | Hide flag (Y/N) — controls whether this row is hidden on the terminal |
+| HIDE | VARCHAR2 1 | Hide flag (Y/N) — controls whether this row is hidden at this location |
 
 **Notes:**
-- One row per terminal per PLACE/POSITION — defines what tracking actions the terminal can perform at each place.
+- **`TERMINAL` here is a misnomer — it holds a location/collection-center code (T1, J1, F1, C1, E1, W1, TREM, QUEST, etc.), NOT a device/PC ID.** Confirmed values from production: Temple (T1–T7), Jeanes (J1–J2), Fox Chase (F1–F3), Chestnut Hill (C1–C2), Episcopal (E1), Women & Families (W1–W2), instruments (TREM), reference labs (QUEST), plus service-area codes (EACT, ECLIN, TACC1, etc.).
+- One row per LOCATION per PLACE/POSITION — defines tracking actions at each physical location, not per-device.
+- To compare two PCs' specimen-tracking config: first resolve each PC's `COLL_CENTER_ID` from `V_S_LAB_TERMINAL`, then compare SPTR_SETUP rows for those center codes. If the two PCs share a `COLL_CENTER_ID`, their SPTR_SETUP is identical and any functional difference between them lives elsewhere (label printer setup, workstation assignment, OS, etc.).
 - Join `V_S_LAB_SPTR_SETUP.PLACE = V_S_LAB_SPTR_STOP.PLACE` to get the specimen status/location rules associated with the place.
-- Key columns for comparing two terminals' behavior: `STATUS`, `ACTIONS`, `HIDE`, `LOCATION`, `CONTAINER`, `LOC_DEPT_WRKSTN`, `TYPE`, `SETUP_OPTION`.
 
 ### V_S_LAB_SPTR_STOP — Specimen tracking stop/place definition
 
