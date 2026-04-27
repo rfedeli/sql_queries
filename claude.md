@@ -189,24 +189,143 @@ Every monetary column in SoftAR (`ITPRICE`, `ITBAL`, `INCHARGE`, `INDUEAMT`, `VT
 
 ### V_P_LAB_ORDER — Order data
 
+89 columns total — grouped here by category. The full column list is authoritative as of 2026-04-27 discovery; vestigial / never-populated columns (`DATA_LENGTH = 0`) are listed but not detailed.
+
+#### Identity & Routing
+
 | Column | Type | Description |
 |--------|------|-------------|
-| AA_ID | NUMBER 14 | PK |
+| AA_ID | NUMBER 14 | PK (NOT NULL) |
 | ID | VARCHAR2 11 | Order number (matches V_P_BB_BB_Order.ORDERNO and V_P_ARE_VISIT.VTORGORDNUM for cross-module joins) |
-| STAY_AA_ID | NUMBER 14 | FK → V_P_LAB_STAY.AA_ID |
-| ORDERED_DT | DATE | Ordering date/time |
-| COLLECT_DT | DATE | To-be-collected date/time |
-| PRIORITY | CHAR 1 | Ordering priority (S=Stat, R=Routine, T=Timed) |
-| REQUESTING_DOCTOR_ID | VARCHAR2 15 | Requesting doctor (FK by code → V_S_LAB_DOCTOR.ID) |
+| STAY_AA_ID | NUMBER 22 | FK → V_P_LAB_STAY.AA_ID |
+| BILLING | VARCHAR2 23 | Epic CSN — denormalized from V_P_LAB_STAY.BILLING (same identifier; lets you join to AR/Epic without going through Stay) |
+| ACTIVE_FLAG | CHAR 1 | Active flag (Y/N) |
+| ORDER_TYPE | CHAR 1 | Order type code |
+| PATIENT_TYPE | CHAR 1 | Patient type code |
+| ORIGIN | VARCHAR2 15 | How the order was created — observed values: `HIS.POCT` (Point-of-Care via HIS interface) on POC orders. Useful classifier for HIS-vs-direct order entry |
 | ORDERING_CLINIC_ID | VARCHAR2 15 | Ordering ward/clinic (FK by code → V_S_LAB_CLINIC.ID) |
 | COLLECT_CENTER_ID | VARCHAR2 11 | Collection center (FK by code → V_S_LAB_COLL_CENTER.ID) |
-| INSURANCE1_ID | VARCHAR2 15 | Insurance (FK by code → V_S_LAB_INSURANCE.ID) |
-| VERIFIED | VARCHAR2 1 | Verified flag |
-| BBTEST | VARCHAR2 1 | Blood bank test ordered flag |
-| BACTITEST | VARCHAR2 1 | Micro test ordered flag |
-| HOMECARE | VARCHAR2 1 | Homecare flag |
-| NO_CHARGE | VARCHAR2 1 | No charge flag |
-| PRE_OP | VARCHAR2 1 | Pre-op flag |
+| MEDICAL_SERVICE_ID | VARCHAR2 5 | Medical service (FK by code → V_S_LAB_MEDICAL_SERVICE.ID) |
+| STUDY_ID | VARCHAR2 5 | Study code (FK by code → V_S_LAB_STUDY.ID) |
+| ENVIRONMENT | NUMBER 22 | Environment bitmask — observed `2048` (= 2^11) on POC orders. Not a free numeric value; encodes test environment / module flags |
+| ENVIRONMENT_MIXED | NUMBER 22 | Mixed-environment count or marker (varies 0/1/2 in samples) |
+| HOLD_STATUS | NUMBER 22 | Hold status — observed values are 9-digit numbers (e.g. 105655429), so this looks like an internal reference key rather than an enum/status code. Semantics not yet confirmed |
+
+#### Dates & Times
+
+The numeric / DATE triple pattern (same as V_P_LAB_TUBE, V_P_LAB_CANCELLATION):
+
+| Column | Type | Description |
+|--------|------|-------------|
+| ORDERED_DATE | NUMBER 22 | Order date as YYYYMMDD integer |
+| ORDERED_TIME | NUMBER 22 | Order time as HHMM integer (leading zero stripped because NUMBER) |
+| ORDERED_DT | DATE | Ordering date/time (canonical — prefer this) |
+| COLLECT_DATE | NUMBER 22 | To-be-collected date as YYYYMMDD integer |
+| COLLECT_TIME | NUMBER 22 | To-be-collected time as HHMM integer |
+| COLLECT_DT | DATE | To-be-collected date/time (canonical) |
+| COLLECT_DT_NO_TIME | CHAR 1 | Y/N — whether the collect time is unknown / date-only |
+| AO_DT | DATE | Auto-Order timestamp (mirrors ORDERED_DT on POC samples; may differ on add-ons / cycling orders) |
+| ACC_DT | DATE | Accession timestamp (mirrors COLLECT_DT on POC samples; may differ when accessioning happens after collection) |
+
+#### People
+
+| Column | Type | Description |
+|--------|------|-------------|
+| REQUESTING_DOCTOR_ID | VARCHAR2 15 | Requesting doctor (FK by code → V_S_LAB_DOCTOR.ID) |
+| ORDERING_TECH_ID | VARCHAR2 16 | Ordering technologist (FK by code → V_S_LAB_PHLEBOTOMIST.ID) |
+| ORDERING_TECHNIK | VARCHAR2 16 | **Duplicate of ORDERING_TECH_ID** — legacy German spelling preserved alongside Anglo. Same value in samples. Pick one; expect them to match |
+
+#### Insurance
+
+| Column | Type | Description |
+|--------|------|-------------|
+| INSURANCE1_ID | VARCHAR2 15 | Primary insurance (FK by code → V_S_LAB_INSURANCE.ID) |
+| INSURANCE2_ID | VARCHAR2 15 | Secondary insurance (FK by code → V_S_LAB_INSURANCE.ID) |
+| INSURANCE3_ID | VARCHAR2 15 | Tertiary insurance (FK by code → V_S_LAB_INSURANCE.ID) |
+| FAILED_PAYOR | VARCHAR2 15 | Payor for order — supersedes deprecated V_P_LAB_PAYOR view. Populated when payor selection failed/needed override |
+
+#### Priority & Cancellation
+
+| Column | Type | Description |
+|--------|------|-------------|
+| PRIORITY | CHAR 1 | Ordering priority (S=Stat, R=Routine, T=Timed) |
+| TESTS_CANCEL | VARCHAR2 1 | Order-level cancellation summary flag — see notes below. Pure Y/N (validated 3-month sample); ~7.8% of orders are 'Y' |
+| VERIFIED | VARCHAR2 1 | Verified flag (Y/N) — ~98.5% of orders end Y in steady state |
+
+#### Workflow Flags (all VARCHAR2 1, Y/N)
+
+| Column | Description |
+|--------|-------------|
+| BBTEST | Blood bank test ordered (~3.6% Y) |
+| BACTITEST | Micro test ordered (~5.8% Y) |
+| HOMECARE | Homecare flag — schema slot exists but **observed always 'N'** in 1-month sample (rarely or never populated in this deployment) |
+| NO_CHARGE | No-charge flag — observed always 'N' (rarely populated) |
+| PRE_OP | Pre-op flag — observed always 'N' (rarely populated) |
+| AUTOREPT | Auto-report flag |
+| JOINPREV | Join-previous flag |
+| MIXEDPRIORS | Mixed-priorities flag |
+| TESTSTOCALL | Tests-to-call flag |
+| TESTS_WRKLOAD | Tests-workload flag |
+| LIFETHREAT | Life-threatening flag |
+| CALLPREDEF | Call-predefined flag |
+| CALL_SPEC | Call-specimen flag |
+| CALL_ORDER | Call-order flag |
+| CALLED | Called flag |
+| MIN_VOLUME_FLAG | Minimum-volume flag |
+| POSTED | Posted flag |
+| ACYYY2 | (Internal) |
+
+#### Reporting State
+
+| Column | Type | Description |
+|--------|------|-------------|
+| R_RPT, T_RPT, D7_RPT, D_RPT, F_RPT, ID_RPT | VARCHAR2 1 | Report-status flags (Y/N) for various report formats. F_RPT = 'Y' on POC samples while siblings = 'N' — likely "final report sent" |
+| CHAPTERS_TO_REPORT | NUMBER 22 | Bitmask of chapters to report |
+| REPORTED_CHAPTERS | NUMBER 22 | Bitmask of reported chapters |
+| REPORTED_CHPTS_PERM | NUMBER 22 | Permanent reported-chapters bitmask |
+| RES_CHANGES_IN_PERM_REPORT | NUMBER 22 | Result-changes-in-permanent-report flag/count |
+
+#### Result-Range Flags (all VARCHAR2 1)
+
+| Column | Description |
+|--------|-------------|
+| PANIC_LOW / PANIC_HIGH | Panic range bounds applied flag |
+| ABNORMAL_LOW / ABNORMAL_HIGH | Abnormal range bounds applied flag |
+| PERCENT_DELTA / ABSOLUTE_DELTA | Delta-check flags |
+| ABSURD_LOW / ABSURD_HIGH | Absurd range bounds applied flag |
+
+#### Free Text
+
+| Column | Type | Description |
+|--------|------|-------------|
+| NOTES | CLOB 4000 | Order-level notes (PHI-adjacent) |
+| COMMENTS | CLOB 4000 | Order-level comments (PHI-adjacent; distinct from NOTES) |
+| ACCSREQ | VARCHAR2 40 | Accession-request text |
+
+#### CSReq / Externals
+
+| Column | Type | Description |
+|--------|------|-------------|
+| CSREQ_AA_NSID | VARCHAR2 20 | CSReq namespace ID |
+| CSREQ_AA_UID | VARCHAR2 200 | CSReq universal ID |
+| CSREQ_AA_UID_TYPE | VARCHAR2 8 | CSReq UID type |
+| CSREQ_AA_UIDTYPE | VARCHAR2 8 | CSReq UID type (duplicate column — name variant) |
+| ACUUU_0 / ACUUU_1 / ACUUU_2 | VARCHAR2 15 | Three secondary identifier slots (purpose unconfirmed; empty in POC samples) |
+
+#### Empty / Vestigial (DATA_LENGTH = 0 — placeholder columns, never written)
+
+`RECEIVING_DOC1_ID`, `RECEIVING_DOC2_ID`, `RECEIVING_DOC3_ID`, `RECEIVING_DOC4_ID`, `RECEIVING_DOC5_ID`, `READY_FOR_FINAL_KEY`, `CANCEL_REASON`, `PRIORITY_REASON`, `LAST_REPORT`. Don't use these in queries — they're schema slots without storage.
+
+**Notes:**
+- **Active table**: ~190K orders/month observed in 1-month sample.
+- **`TESTS_CANCEL` semantics** (validated against `V_P_LAB_ORDERED_TEST.CANCELLED_FLAG` over 1 month):
+  - `'Y'` → "all tests on this order are cancelled" (98.5% of Y rows; the order is effectively a fully-cancelled shell). ~1.5% of Y rows drift (some / no tests actually cancelled) — flag is denormalized and slightly lazy.
+  - `'N'` → "at least one test is NOT cancelled" — but **3.8% of N orders still have *partial* cancellations**. `TESTS_CANCEL = 'N'` is NOT equivalent to "no cancellations".
+  - For correctness-critical filters (cancellation reports), join `V_P_LAB_ORDERED_TEST.CANCELLED_FLAG` directly instead of trusting this flag.
+  - Fast filter for "exclude fully-cancelled orders" → `WHERE TESTS_CANCEL = 'N'` is the typical idiom and is what most TAT queries in this repo use.
+- **`BILLING` = Epic CSN** — same identifier as `V_P_LAB_STAY.BILLING`, denormalized to the order. Queries that just need CSN + order number can stay at this level.
+- **`ORDERING_TECH_ID` and `ORDERING_TECHNIK`** are duplicate columns; pick one (usually `ORDERING_TECH_ID`) and expect both to match.
+- **`HOMECARE`, `NO_CHARGE`, `PRE_OP`** are documented but observed always `'N'` in current operations — schema slots that aren't being populated. Don't filter expecting `'Y'` rows.
 
 ### V_P_LAB_ORDERED_TEST — Ordered test data
 
@@ -230,31 +349,216 @@ Every monetary column in SoftAR (`ITPRICE`, `ITBAL`, `INCHARGE`, `INDUEAMT`, `VT
 
 ### V_P_LAB_TEST_RESULT — Test result data
 
+**242 columns total** — grouped here by category. Volume: ~162K rows/day, ~5M/month, ~60M/year. Heavy panel-fanout (one panel order → ~24 component result rows). Stick to ≤7 day windows for full-row dumps and ≤1 month for aggregates; index access via `TEST_DT` is essentially mandatory.
+
+#### Identity & Joins
+
 | Column | Type | Description |
 |--------|------|-------------|
-| AA_ID | NUMBER 14 | PK |
-| ORDER_AA_ID | NUMBER 14 | FK → V_P_LAB_ORDER.AA_ID |
-| TEST_ID | VARCHAR2 5 | Individual test id, component-level (FK by code → V_S_LAB_TEST.ID) |
-| GROUP_TEST_ID | VARCHAR2 5 | Code of ordered test (FK by code → V_S_LAB_TEST_GROUP.ID; matches ORDERED_TEST.TEST_ID) |
-| RESULT | VARCHAR2 40 | Test result value |
-| STATE | VARCHAR2 9 | Result state: Pending, Final, Verified, Corrected, Canceled |
-| PRIORITY | CHAR 1 | Priority (S/R/T) |
+| AA_ID | NUMBER 22 | PK (NOT NULL) |
+| ORDER_AA_ID | NUMBER 22 | FK → V_P_LAB_ORDER.AA_ID |
+| ORDER_ID | VARCHAR2 11 | Order number — denormalized from V_P_LAB_ORDER.ID. Lets queries display the human-readable order# without joining ORDER |
+| TEST_ID | VARCHAR2 5 | Individual test code, component-level (FK by code → V_S_LAB_TEST.ID) |
+| GROUP_TEST_ID | VARCHAR2 5 | Group/orderable test code (FK by code → V_S_LAB_TEST_GROUP.ID; matches V_P_LAB_ORDERED_TEST.TEST_ID) |
+| ORGANIZATION_AA_ID | NUMBER 22 | FK → organization (mostly empty — populated for send-out / external tests) |
+| INTERPRETER_AA_ID | NUMBER 22 | FK → interpreter (empty for routine results; populated for path-reviewed) |
+| PATHREVIEW_AA_ID | NUMBER 22 | FK → pathology review (when applicable) |
+
+#### Result Content
+
+| Column | Type | Description |
+|--------|------|-------------|
+| RESULT | VARCHAR2 40 | Result value (text — may be 'PRELIM' / 'POS' / numeric / etc.). Note: micro tests can show `RESULT='PRELIM'` even when `STATE='Final'` (multiple Final rows over time as cultures progress) |
+| STATE | VARCHAR2 9 | Result state — **active values: `Pending` → `Final` (or `Corrected`) | `Canceled`**. The dict-listed value `Verified` doesn't appear in 7-day data; treat as inactive. ~50% of recent rows are `Canceled` (panel-fanout from cancellations) — most reports filter `STATE IN ('Final', 'Corrected')` |
+| STATUS | VARCHAR2 12 | Empty in samples — vestigial, use STATE |
+| RESULT_STATUS | CHAR 1 | Empty in samples — vestigial, use STATE |
+| PRIORITY | CHAR 1 | Priority (S=Stat, R=Routine, T=Timed) |
+| UNITS | VARCHAR2 80 | Test units at resulting |
+| ATUNITS | VARCHAR2 80 | At-result units (often duplicates UNITS) |
+| ATRANGELOW / ATRANGEHIGH / ATRANGENORM | VARCHAR2 | At-result reference ranges |
+| LOW_RANGES / HIGH_RANGES | VARCHAR2 32 | Reference range bounds |
+| NORMAL_RANGE | VARCHAR2 256 | Reference range display string |
+| ABNORMAL_FLAGS | VARCHAR2 4000 | Abnormal flag string |
+| AFLAGS4 | VARCHAR2 4000 | Additional flags string |
+| SECONDARY_ID | VARCHAR2 40 | Secondary identifier |
+| TEST_TYPE | CHAR 1 | Test type code |
+| LOINC_CODE | VARCHAR2 40 | LOINC code for the test (denormalized; useful for HL7/ELR) |
+| TEST_NAME | VARCHAR2 59 | Test name (denormalized — skip V_S_LAB_TEST join when only displaying) |
+| REPORTED_TEST_NAME | VARCHAR2 30 | Display name for the test on the report |
+| INTERPRET_MSG / TEST_INFO_MSG / DELTA_CHECK_FAIL_MSG | VARCHAR2 5 | Reference codes to message templates |
+| COMMENTS | CLOB 4000 | Test result comments (PHI-adjacent free text) |
+| SPECIMEN_TYPE | VARCHAR2 8 | Specimen type |
+
+#### Dates & Times (numeric/DATE triple pattern continues)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| TEST_DATE / TEST_TIME / TEST_DT | NUMBER / NUMBER / DATE | Testing timestamp (instrument run time) — prefer `TEST_DT` |
+| VERIFIED_DATE / VERIFIED_TIME / VERIFIED_DT | NUMBER / NUMBER / DATE | Verification timestamp — prefer `VERIFIED_DT` |
+| COLLECT_DATE / COLLECT_TIME / COLLECT_DT | NUMBER / NUMBER / DATE | Collection timestamp — prefer `COLLECT_DT` |
+| RECEIVE_DATE / RECEIVE_TIME / RECEIVE_DT | NUMBER / NUMBER / DATE | Receipt timestamp — prefer `RECEIVE_DT` |
+| REFLEX_DATE / REFLEX_TIME / REFLEX_DT | NUMBER / NUMBER / DATE | Reflex timestamp — prefer `REFLEX_DT` |
+| UNVERIFIED_DATE / UNVERIFIED_TIME / UNVERIFIED_DT | NUMBER / NUMBER / DATE | Result-rollback timestamp (when a verified result was un-verified). Useful for amendment audits |
+| PLATE_DT | DATE | Plating timestamp (microbiology — when specimen was plated for culture). Mirrors RECEIVE_DT in observed micro samples |
+| TO_BE_COLLECT_DT | DATE | Scheduled collection time |
+| TAT | NUMBER 22 | **EXPECTED TAT from test setup, NOT measured TAT.** Reading this column gives you the SLA target, not the actual elapsed time. Compute measured TAT from `VERIFIED_DT - RECEIVE_DT` (or analogous date arithmetic) |
+| DELTA_TIME_RANGE | NUMBER 22 | Delta-check time-window setting |
+
+#### People
+
+| Column | Type | Description |
+|--------|------|-------------|
+| TECH_ID | VARCHAR2 16 | Technologist code — usage varies by test type. For micro batch results, observed as a workstation/role code (e.g. `'OTHCX'`) rather than a personal ID. For chemistry/heme, expected to hold the actual tech ID |
+| TECHNIK_ID | VARCHAR2 16 | **Duplicate of TECH_ID** (legacy German "Techniker" naming). Empty in micro samples; populated elsewhere. Pick one; expect them to match |
+| REVIEWER_ID | VARCHAR2 16 | Reviewer code (FK by code → V_S_LAB_PHLEBOTOMIST.ID) |
+| UNVERIFIED_TECH | VARCHAR2 16 | Tech who un-verified (rolled back) the result |
+| PLATE_TECH | VARCHAR2 16 | Tech who plated the specimen (microbiology) — often the *real* tech identity for micro results |
+| PERFORMED_BY | VARCHAR2 5 | Performing-tech short code |
+
+#### Workstations & Locations (with duplicate-column caveats)
+
+| Column | Type | Description |
+|--------|------|-------------|
 | ORDERING_WORKSTATION_ID | VARCHAR2 5 | Ordering workstation (FK by code → V_S_LAB_WORKSTATION.ID) |
 | TESTING_WORKSTATION_ID | VARCHAR2 5 | Testing/performing workstation (FK by code → V_S_LAB_WORKSTATION.ID) |
-| TEST_PERFORMING_LOCATION | VARCHAR2 4 | Location where test is performed |
 | TEST_PERFORMING_DEPT | VARCHAR2 5 | Performing department |
-| TEST_DT | DATE | Testing date/time |
-| VERIFIED_DT | DATE | Verification date/time |
-| COLLECT_DT | DATE | Collection date/time |
-| RECEIVE_DT | DATE | Receive date/time |
-| REFLEX_DT | DATE | Reflex date/time |
-| TECHNIK_ID | VARCHAR2 16 | Technologist id (FK by code → V_S_LAB_PHLEBOTOMIST.ID) |
-| REVIEWER_ID | VARCHAR2 16 | Reviewer id (FK by code → V_S_LAB_PHLEBOTOMIST.ID) |
-| COMMENTS | CLOB | Test comments |
-| SPECIMEN_TYPE | VARCHAR2 8 | Specimen type |
-| UNITS | VARCHAR2 80 | Test units at resulting |
-| PERFORMING_LAB | VARCHAR2 1 | Flag: resulted at reference lab (Y/N) |
-| REFERENCE_LAB_ID | VARCHAR2 20 | Reference lab ID |
+| PERFORMING_DEPARTMENT | VARCHAR2 5 | **Duplicate of TEST_PERFORMING_DEPT** (legacy column) |
+| TEST_PERFORMING_LOCATION | VARCHAR2 4 | Performing facility (e.g. `TUH`, `JNS`) |
+| LOCATION | VARCHAR2 4 | **Duplicate of TEST_PERFORMING_LOCATION** (legacy column) |
+| SER_OWNERID | VARCHAR2 5 | Series owner ID |
+
+#### Workflow State Flags (all VARCHAR2 1, Y/N unless noted)
+
+| Column | Description |
+|--------|-------------|
+| `VERIFIED_FLAG` | Result was signed off / posted. **Persists `'Y'` even after cancellation** — NOT derived from STATE. Use `STATE IN ('Final','Corrected')` for "actually-final results"; `VERIFIED_FLAG = 'N'` for "currently-pending" only when paired with non-Canceled state |
+| `SPEC_COLLECTED` | Specimen collected (~94% Y in 7-day sample) |
+| `SPEC_RECEIVED` | Specimen received (CHAR 1, ~93% Y in 7-day sample) |
+| `SPECIMEN_OVERDUE` | Specimen-overdue flag |
+| `WORKSHEETED_FLAG` | Worksheeted |
+| `DOWNLOADED_FLAG` | Downloaded to instrument |
+| `EDITED_FLAG` | Result edited |
+| `POSTED_FLAG` | Posted |
+| `REPORTED_FLAG` | Reported |
+| `BILLED_FLAG` | Billed |
+| `CREDITED_FLAG` | Credited |
+| `RERUN_FLAG` | Rerun performed |
+| `REFLEX_TEST` / `REFLEX_TEST_ID` | Reflex test flag + parent test code |
+| `SERIES_TEST` | Series test flag |
+| `RESULT_NOT_CHANGED` | Result unchanged on re-result |
+| `IS_AUTORESULTED_WITH_DEFAULT` | Auto-resulted with default value |
+| `IS_AUTOVERIFIED_RESULT` | Auto-verified |
+| `CALCULATED` | Result is calculated from other tests |
+| `WORKFLAG` | Workflow flag |
+| `REPORT_TO_HIS` | Report to HIS flag |
+| `DONT_SEND_TO_HIS` | Don't send to HIS |
+| `TEST_REPORTED` | Test was reported |
+| `ABNORMAL_TEST_REPORT` | Abnormal-test report flag |
+| `HIDDEN_RESULT` | Hidden result |
+| `HIDE_IN_QUERY_CALLIST` | Hide in query call list |
+| `D7_REPORTED` / `D_REPORTED` / `T_REPORTED` / `F_REPORTED` | Report status flags (Final-Report sent on `F_REPORTED='Y'`) |
+| `INFECTIOUS_TEST` | Infection-control flag |
+| `BACI_TEST` | Bactiology/micro flag |
+| `MICRO_BILLING_TEST` | Micro-billing flag |
+| `PRICE_FROM_RESULT` | Price-from-result flag |
+| `SEPARATE_TUBE` | Requires separate tube |
+| `SPEC_PLATED_FLAG` | NUMBER 22 — specimen-plated indicator (micro) |
+| `PANIC_AS_TOXIC` | Panic-as-toxic interpretation flag |
+| `NUMBER_OF_REQUESTED_SPECIMENS` | NUMBER 22 |
+
+#### Result-Range Flags (all VARCHAR2 1, set when result triggers the range)
+
+| Column | Description |
+|--------|-------------|
+| PANIC_LOW / PANIC_HIGH | Panic range hit (low/high) |
+| ABNORMAL_LOW / ABNORMAL_HIGH | Abnormal range hit |
+| ABSURD_LOW / ABSURD_HIGH | Absurd range hit |
+| PERCENT_DELTA / ABSOLUTE_DELTA | Delta-check fail flags |
+| PANIC_REPEATED | NUMBER 22 — panic-repeat counter |
+| PANIC_REPEATED_MSG | VARCHAR2 7 — panic-repeat message |
+| PANIC_REPEATED_ORDER | VARCHAR2 11 — order# of repeat |
+
+#### Reference Lab
+
+| Column | Type | Description |
+|--------|------|-------------|
+| PERFORMING_LAB | VARCHAR2 1 | Y = resulted at reference lab. Only ~0.3% of recent rows are Y. **Has NULLs (~0.02%)** — use `COALESCE(PERFORMING_LAB, 'N') <> 'Y'` for inclusive non-send-out filtering |
+| REFERENCE_LAB_ID | VARCHAR2 20 | Reference lab identifier |
+| REFLAB_TEST_CODE | VARCHAR2 30 | Reference-lab's test code |
+| REF_LAB | VARCHAR2 1 | Send-out flag (older Y/N) |
+| ATREFLAB / ATREFLABID | VARCHAR2 / VARCHAR2 20 | At-result reference-lab markers |
+| REFLAB_INTERP_FLAG / REFLAB_INTERP_FLAG_NAME / REFLAB_INTERP_FLAG_CS / REFLAB_INTERP_FLAG_CSV | VARCHAR2 | Reference-lab interpretation flag + coding-system metadata |
+| REFLAB_INTERP_FLAG_NAME_CS / REFLAB_INTERP_FLAG_NAME_CSV | VARCHAR2 | (additional CS variants) |
+
+#### Performing Organization (denormalized — populated for send-outs)
+
+Two parallel column blocks (legacy duplication): `PERFORMING_ORG_*` (cols 167–194) and `PERF_ORG_*` (cols 195–222), each carrying full org address, MD info, and namespace identifiers. **Both blocks are entirely empty for in-house tests** in observed samples; populated when results come from an external performing org. Within each block: `*_ORG_NAME`, `*_ORG_CLIA`, `*_ORG_ADDR1/ADDR2/CITY/STATE/ZIP/COUNTY/COUNTRY/PHONE`, plus performing-MD `*_MD_LNAME/FNAME/MNAME/PREFIX/SUFFIX/PROSUFFIX/AANSID/AAUID/AAUID_TYPE/AFNSID/AFUID/AFUID_TYPE`. `PERFORMING_ORG_CLIA` and `PERF_ORG_CLIA` may be populated for in-house results (own CLIA stamp). Treat the two blocks as redundant; pick one for queries.
+
+#### Interpreter (denormalized — empty for routine results)
+
+Two parallel blocks: `P_R_I_*` (cols 223–231) and `PRI_*` (cols 232–240) for "Principal Reviewing Interpreter." Each holds `*_LNAME/FNAME/MNAME/PREFIX/SUFFIX/PROSUFFIX/AANSID/AAUID/AAUID_TYPE`. Empty in routine samples; populated for path-reviewed/interpreted results. Treat as duplicates — pick one.
+
+#### Reporting & QC State
+
+| Column | Type | Description |
+|--------|------|-------------|
+| QC_TIME_VIOLATE / BAD_QC_RESULT / QC_TRUE_LOCK / QC_CHECK_ORDER_PRESENT / QC_AT_RESULTING / QC_AT_VERIFICATION / QC_AT_FINAL | VARCHAR2 1 | QC checkpoint flags |
+| QC_STATUS | NUMBER 22 | QC overall status code |
+| TOURNAROUND_VIOLAT | VARCHAR2 1 | TAT-violated flag (note: schema name has the typo `TOURNAROUND` not `TURNAROUND`) |
+| EXCLUDE_FROM_TAT_GRP_CALC | VARCHAR2 1 | **Important for TAT reports** — exclude this row from TAT group calculations |
+| EXCLUDE_FROM_TAT_STAT | VARCHAR2 1 | Exclude from TAT statistics |
+| WORKLOAD_FOR_DRG / WORKLOAD_FOR_STATS | VARCHAR2 1 | Workload counters |
+| NOT_CALLABLE_TEST / NOT_REPORT_TEST | VARCHAR2 1 | Calling/reporting suppression |
+| PATH_REVIEW_REQUESTED / PATH_REVIEW_DONE / PATH_REVIEW_REQ_POSIT / DNR_WITHOUT_PATH_REVIEW / SPECIAL_BILL_FOR_PATH | VARCHAR2 1 | Pathology review workflow flags |
+| FLAG_NRAD_NEW_RESULT / FLAG_NRAD_REPORTED | VARCHAR2 1 | NRAD (non-radiology?) flagging |
+| ORDER_SORT / PATHREVIEW_SORT | NUMBER 22 | Sort positions |
+| PROMPT_TYPE | VARCHAR2 1 | Prompt type |
+
+#### Observation / Identification metadata (HL7-style)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| OBSERVATION_METHOD / OBS_METHOD | VARCHAR2 20 | Observation method code (duplicate columns) |
+| OBS_METHOD_NAME / OBS_METHOD_CS / OBS_METHOD_CSV | VARCHAR2 | Method name + coding-system pair |
+| OBS_METHOD_NAME_CS / OBS_METHOD_NAME_CSV | VARCHAR2 | (additional CS variants) |
+| UNITS_NAME / UNITS_NAME_CS / UNITS_NAME_CSV | VARCHAR2 | Units coded-element triple |
+| AAUTH_NAMESPACE_ID / AAUTH_UNI_ID / AAUTH_UNI_ID_TYPE | VARCHAR2 | Assigning authority namespace + universal ID |
+| IDENT_TYPE_CODE | VARCHAR2 5 | Identifier type code |
+| ADDRESS_TYPE | VARCHAR2 3 | Address type code |
+| ATFLAGS / ATUNITS / etc. | VARCHAR2 | At-time-of-result snapshot fields |
+
+#### Empty / Vestigial (DATA_LENGTH = 0 — placeholder columns, never written)
+
+`HIDE_RES_IN_CALLIST` (col 98), `RESULT_SENT_TO_HL7` (col 160). Don't use in queries.
+
+**Notes:**
+
+- **Volume**: ~162K rows/day, ~5M/month. Stick to ≤7 days for full-row dumps.
+- **`VERIFIED_FLAG` semantics** (validated 7-day data):
+  - `'Y'` for any signed-off result row including ones later cancelled (553K Canceled rows have `VERIFIED_FLAG='Y'` in 7-day sample).
+  - `'N'` only for `STATE='Pending'` (1,215 rows, ~0.1%).
+  - Use `VERIFIED_FLAG='N' AND SPEC_RECEIVED='Y'` for "received but not yet verified" (the pending-test pattern).
+  - Don't use `VERIFIED_FLAG='Y'` as a "show me final results" filter — it includes cancellations.
+- **`STATE` distribution** (7-day sample, ~1.14M rows):
+  - `Final`: 51% — verified results
+  - `Canceled`: 49% — **massive panel-fanout from cancellations**, one cancellation event spawns N component-result rows in Canceled state
+  - `Pending`: 0.1% — awaiting verification
+  - `Corrected`: 0.07% — amended results
+  - `Verified`: not observed (treat as inactive)
+  - **Standard "real results" filter: `STATE IN ('Final', 'Corrected')`** — without it, queries are contaminated with ~50% cancellation noise.
+- **`TAT` is the SLA target, not measured TAT** — sample shows `TAT=72` (target minutes from setup) on a Final-state row whose actual elapsed time was different. Do not use this column for TAT performance reporting; compute from date arithmetic.
+- **Duplicate-column legacy** — pick one of each pair (values match in practice):
+  - `TECH_ID` ↔ `TECHNIK_ID`
+  - `TEST_PERFORMING_DEPT` ↔ `PERFORMING_DEPARTMENT`
+  - `TEST_PERFORMING_LOCATION` ↔ `LOCATION`
+  - `OBSERVATION_METHOD` ↔ `OBS_METHOD`
+  - `PERFORMING_ORG_*` block ↔ `PERF_ORG_*` block (entire 28-col duplication)
+  - `P_R_I_*` block ↔ `PRI_*` block
+  - `PERFORMING_ORG_CLIA` ↔ `PERF_ORG_CLIA`
+- **Micro vs. chemistry caveat**: in micro batch results, `TECH_ID/TECHNIK_ID` may be a workstation/role code while the actual tech is in `PLATE_TECH`. In chemistry, expect personal IDs in `TECH_ID`/`TECHNIK_ID`.
+- **`PERFORMING_LAB` has NULLs** (~0.02%) — use `COALESCE(PERFORMING_LAB,'N')` for inclusive non-send-out filtering.
+- **`ORDER_ID` denormalization** — order number is on the result row; skip the V_P_LAB_ORDER join when only the human-readable order# is needed.
+- **Micro results** can show `RESULT='PRELIM'` with `STATE='Final'` — multiple Final rows over time as the culture progresses.
 
 **Instrument TAT Analysis Note:** For analyzer/instrument turn-around time, use `TEST_DT` (when instrument ran the test) in combination with `RECEIVE_DT` and `VERIFIED_DT`:
 - `RECEIVE_DT` → `TEST_DT` = Time waiting for instrument
