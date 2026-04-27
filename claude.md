@@ -62,6 +62,14 @@ V_P_LAB_ORDERED_TEST joined to V_P_LAB_TEST_RESULT:
     ot.ORDER_AA_ID = tr.ORDER_AA_ID
     AND ot.TEST_ID = tr.GROUP_TEST_ID
     AND ot.WORKSTATION_ID = tr.ORDERING_WORKSTATION_ID
+
+V_P_LAB_CANCELLATION fans out to FOUR possible parents (discriminated
+union — exactly one FK is non-null per row):
+    .ORDERED_TEST_AA_ID      → V_P_LAB_ORDERED_TEST.AA_ID     (test-level cancel)
+    .TEST_RESULT_AA_ID       → V_P_LAB_TEST_RESULT.AA_ID      (result-level cancel)
+    .SPECIMEN_AA_ID          → V_P_LAB_SPECIMEN.AA_ID         (specimen-level cancel)
+    .ORDERING_PATTERN_AA_ID  → V_P_LAB_ORDERING_PATTERN.AA_ID (standing-order cancel)
+INNER JOIN on a single FK silently misses the other three categories.
 ```
 
 ### Blood Bank (SoftBank) Relationships
@@ -112,6 +120,26 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 
 ---
 
+## Cross-Cutting Query Rules
+
+These rules apply to every query — also documented in `field_reference.md`. Read both files before writing a new query.
+
+### Valid MRN Filter (mandatory on every query touching patient identity)
+
+Real Temple patient MRNs always match `^E[0-9]+$` (E followed by digits). Other prefixes (TX, EX, ZZ, etc.) are test/fake patients seeded into the system. Any query that joins `V_P_LAB_PATIENT` or `V_P_ARE_PERSON` must include:
+
+```sql
+AND REGEXP_LIKE(p.ID, '^E[0-9]+$')  -- Valid MRNs only
+```
+
+(Use the appropriate alias and column — `pt.ID` for `V_P_LAB_PATIENT`, `PTMRN` for `V_P_ARE_PERSON`.) Skip only when the explicit goal is to find fake/test patients, in which case invert the predicate.
+
+### SoftAR Money Fields Are Stored in Cents
+
+Every monetary column in SoftAR (`ITPRICE`, `ITBAL`, `INCHARGE`, `INDUEAMT`, `VTCHARGE`, `TRAMT`, etc.) is stored as integer cents — divide by 100 for dollars when displaying.
+
+---
+
 ## Frequently Used Views — Full Column Detail
 
 ### V_P_LAB_PATIENT — Patient data
@@ -145,10 +173,10 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 | AA_ID | NUMBER 14 | PK |
 | PATIENT_AA_ID | NUMBER 14 | FK → V_P_LAB_PATIENT.AA_ID |
 | BILLING | VARCHAR2 23 | Epic CSN (Contact Serial Number) — encounter identifier from Epic HIS |
-| CLINIC_ID | VARCHAR2 15 | Clinic id |
+| CLINIC_ID | VARCHAR2 15 | FK (by code) → V_S_LAB_CLINIC.ID |
 | ROOM | VARCHAR2 7 | Room |
 | BED | VARCHAR2 3 | Bed |
-| DOCTOR_ID | VARCHAR2 15 | Admitting doctor |
+| DOCTOR_ID | VARCHAR2 15 | Admitting doctor (FK by code → V_S_LAB_DOCTOR.ID) |
 | ADMISSION_DT | DATE | Admission date/time |
 | DISCHARGE_DT | DATE | Discharge date/time |
 | DIAGNOSIS1_ID | VARCHAR2 11 | Primary diagnosis code |
@@ -156,23 +184,23 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 | HIS_PATIENT_TYPE | VARCHAR2 1 | HIS patient type |
 | ADMIT_FLAG | VARCHAR2 1 | Admitted flag |
 | DISCHARGE_FLAG | VARCHAR2 1 | Discharged flag |
-| ADMITTING_DOCTOR_ID | VARCHAR2 15 | Admitting doctor |
-| CONSULTING_DOCTOR_ID | VARCHAR2 15 | Consulting doctor |
+| ADMITTING_DOCTOR_ID | VARCHAR2 15 | Admitting doctor (FK by code → V_S_LAB_DOCTOR.ID) |
+| CONSULTING_DOCTOR_ID | VARCHAR2 15 | Consulting doctor (FK by code → V_S_LAB_DOCTOR.ID) |
 
 ### V_P_LAB_ORDER — Order data
 
 | Column | Type | Description |
 |--------|------|-------------|
 | AA_ID | NUMBER 14 | PK |
-| ID | VARCHAR2 11 | Order number |
+| ID | VARCHAR2 11 | Order number (matches V_P_BB_BB_Order.ORDERNO and V_P_ARE_VISIT.VTORGORDNUM for cross-module joins) |
 | STAY_AA_ID | NUMBER 14 | FK → V_P_LAB_STAY.AA_ID |
 | ORDERED_DT | DATE | Ordering date/time |
 | COLLECT_DT | DATE | To-be-collected date/time |
 | PRIORITY | CHAR 1 | Ordering priority (S=Stat, R=Routine, T=Timed) |
-| REQUESTING_DOCTOR_ID | VARCHAR2 15 | Requesting doctor |
-| ORDERING_CLINIC_ID | VARCHAR2 15 | Ordering ward/clinic |
-| COLLECT_CENTER_ID | VARCHAR2 11 | Collection center |
-| INSURANCE1_ID | VARCHAR2 15 | Insurance |
+| REQUESTING_DOCTOR_ID | VARCHAR2 15 | Requesting doctor (FK by code → V_S_LAB_DOCTOR.ID) |
+| ORDERING_CLINIC_ID | VARCHAR2 15 | Ordering ward/clinic (FK by code → V_S_LAB_CLINIC.ID) |
+| COLLECT_CENTER_ID | VARCHAR2 11 | Collection center (FK by code → V_S_LAB_COLL_CENTER.ID) |
+| INSURANCE1_ID | VARCHAR2 15 | Insurance (FK by code → V_S_LAB_INSURANCE.ID) |
 | VERIFIED | VARCHAR2 1 | Verified flag |
 | BBTEST | VARCHAR2 1 | Blood bank test ordered flag |
 | BACTITEST | VARCHAR2 1 | Micro test ordered flag |
@@ -186,16 +214,16 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 |--------|------|-------------|
 | AA_ID | NUMBER 14 | PK |
 | ORDER_AA_ID | NUMBER 14 | FK → V_P_LAB_ORDER.AA_ID |
-| TEST_ID | VARCHAR2 5 | Test code |
+| TEST_ID | VARCHAR2 5 | Test code (FK by code → V_S_LAB_TEST_GROUP.ID) |
 | ORDER_NO | VARCHAR2 11 | Order number (matches V_P_BB_BB_Order.ORDERNO) |
 | ORDERING_DT | DATE | Ordering date/time |
-| WORKSTATION_ID | VARCHAR2 5 | Ordering workstation |
+| WORKSTATION_ID | VARCHAR2 5 | Ordering workstation (FK by code → V_S_LAB_WORKSTATION.ID) |
 | CANCELLED_FLAG | NUMBER | Canceled flag (0 = active) |
-| TECH_ID | VARCHAR2 16 | Technologist |
-| SIGNING_DOCTOR_ID | VARCHAR2 15 | Authorizing doctor |
-| DOCTOR_ID | VARCHAR2 15 | Requesting doctor |
-| MEDICAL_SERVICE_ID | VARCHAR2 5 | Medical service |
-| CLINIC_ID | VARCHAR2 15 | Ordering ward |
+| TECH_ID | VARCHAR2 16 | Technologist (FK by code → V_S_LAB_PHLEBOTOMIST.ID) |
+| SIGNING_DOCTOR_ID | VARCHAR2 15 | Authorizing doctor (FK by code → V_S_LAB_DOCTOR.ID) |
+| DOCTOR_ID | VARCHAR2 15 | Requesting doctor (FK by code → V_S_LAB_DOCTOR.ID) |
+| MEDICAL_SERVICE_ID | VARCHAR2 5 | Medical service (FK by code → V_S_LAB_MEDICAL_SERVICE.ID) |
+| CLINIC_ID | VARCHAR2 15 | Ordering ward (FK by code → V_S_LAB_CLINIC.ID) |
 | PRIORITY | CHAR 1 | Ordering priority |
 | TRIAGE_STATUS | VARCHAR2 40 | Triage status |
 | BILL_TYPE | NUMBER 5 | Billing type (0=none, 1=Bill Only, 3=No Charge) |
@@ -206,13 +234,13 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 |--------|------|-------------|
 | AA_ID | NUMBER 14 | PK |
 | ORDER_AA_ID | NUMBER 14 | FK → V_P_LAB_ORDER.AA_ID |
-| TEST_ID | VARCHAR2 5 | Individual test id (component level) |
-| GROUP_TEST_ID | VARCHAR2 5 | Code of ordered test (matches ORDERED_TEST.TEST_ID) |
+| TEST_ID | VARCHAR2 5 | Individual test id, component-level (FK by code → V_S_LAB_TEST.ID) |
+| GROUP_TEST_ID | VARCHAR2 5 | Code of ordered test (FK by code → V_S_LAB_TEST_GROUP.ID; matches ORDERED_TEST.TEST_ID) |
 | RESULT | VARCHAR2 40 | Test result value |
 | STATE | VARCHAR2 9 | Result state: Pending, Final, Verified, Corrected, Canceled |
 | PRIORITY | CHAR 1 | Priority (S/R/T) |
-| ORDERING_WORKSTATION_ID | VARCHAR2 5 | Ordering workstation |
-| TESTING_WORKSTATION_ID | VARCHAR2 5 | Testing/performing workstation |
+| ORDERING_WORKSTATION_ID | VARCHAR2 5 | Ordering workstation (FK by code → V_S_LAB_WORKSTATION.ID) |
+| TESTING_WORKSTATION_ID | VARCHAR2 5 | Testing/performing workstation (FK by code → V_S_LAB_WORKSTATION.ID) |
 | TEST_PERFORMING_LOCATION | VARCHAR2 4 | Location where test is performed |
 | TEST_PERFORMING_DEPT | VARCHAR2 5 | Performing department |
 | TEST_DT | DATE | Testing date/time |
@@ -220,8 +248,8 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 | COLLECT_DT | DATE | Collection date/time |
 | RECEIVE_DT | DATE | Receive date/time |
 | REFLEX_DT | DATE | Reflex date/time |
-| TECHNIK_ID | VARCHAR2 16 | Technologist id |
-| REVIEWER_ID | VARCHAR2 16 | Reviewer id |
+| TECHNIK_ID | VARCHAR2 16 | Technologist id (FK by code → V_S_LAB_PHLEBOTOMIST.ID) |
+| REVIEWER_ID | VARCHAR2 16 | Reviewer id (FK by code → V_S_LAB_PHLEBOTOMIST.ID) |
 | COMMENTS | CLOB | Test comments |
 | SPECIMEN_TYPE | VARCHAR2 8 | Specimen type |
 | UNITS | VARCHAR2 80 | Test units at resulting |
@@ -238,7 +266,7 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 | Column | Type | Description |
 |--------|------|-------------|
 | AA_ID | NUMBER 22 | PK |
-| TEST_ID | VARCHAR2 5 | Test ID |
+| TEST_ID | VARCHAR2 5 | Test ID (FK by code → V_S_LAB_TEST_GROUP.ID) |
 | SPEC_COLLECTED | VARCHAR2 1 | Specimen collected flag (Y/N) |
 | SPEC_RECEIVED | VARCHAR2 1 | Specimen received flag (Y/N) |
 | ORDER_AA_ID | NUMBER 22 | FK → V_P_LAB_ORDER.AA_ID |
@@ -253,12 +281,15 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 | AA_ID | NUMBER 14 | PK |
 | PATIENT_AA_ID | NUMBER 14 | FK → V_P_LAB_PATIENT.AA_ID |
 | COLLECTION_DT | DATE | Collection date/time |
-| DRAW_TYPE | VARCHAR2 8 | Specimen draw type |
+| DRAW_TYPE | VARCHAR2 8 | Specimen draw type (e.g. 'D' for default, 'V' for venous) |
 | IS_COLLECTED | VARCHAR2 1 | Collected flag (Y/N) |
 | IS_CANCELLED | VARCHAR2 1 | Cancelled flag |
 | IS_MICRO | VARCHAR2 1 | Micro testing flag |
 | SPECIMEN_TYPE | VARCHAR2 12 | Specimen type |
 | COLLECTION_LOCATION | VARCHAR2 15 | Collection location |
+| COLLECTION_PHLEB_ID | VARCHAR2 16 | Collecting phlebotomist (FK by code → V_S_LAB_PHLEBOTOMIST.ID; also denormalized to V_P_LAB_TUBEINFO.COLLECTION_PHLEB) |
+| ASSIGNED_TO_PHLEB | VARCHAR2 16 | Phlebotomist this specimen was assigned to — intent vs. COLLECTION_PHLEB_ID = actual (FK by code → V_S_LAB_PHLEBOTOMIST.ID) |
+| NURSE_COLL | NUMBER 22 | **HL7 OBR[11] flag — authoritative nurse-vs-lab collect signal.** 1 = nurse-collect (OBR[11]='O'), 0 = lab/phleb-collect (OBR[11]='L'). Validated populated on every ABG/VBG specimen, ~92% nurse-collected. Per SCC docs (KB 13803, KB 23096). Use as primary classifier — supersedes any inference based on COLLECTION_PHLEB_ID, V_S_LAB_PHLEBOTOMIST.NURSE flag, or SoftID role behavior. |
 | DRAW_SITE | VARCHAR2 255 | Draw site |
 | COLLECTION_LIST | NUMBER 10 | Collection list number |
 | CONTAINERS_NUM | NUMBER | Number of containers |
@@ -267,22 +298,43 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 
 | Column | Type | Description |
 |--------|------|-------------|
-| AA_ID | NUMBER 14 | PK |
-| ORDER_AA_ID | NUMBER 14 | FK → V_P_LAB_ORDER.AA_ID |
-| SPECIMEN_AA_ID | NUMBER 14 | FK → V_P_LAB_SPECIMEN.AA_ID |
+| AA_ID | NUMBER 22 | PK |
+| ORDER_AA_ID | NUMBER 22 | FK → V_P_LAB_ORDER.AA_ID |
+| SPECIMEN_AA_ID | NUMBER 22 | FK → V_P_LAB_SPECIMEN.AA_ID |
+| PARENT_TUBE_AA_ID | NUMBER 22 | FK → parent V_P_LAB_TUBE.AA_ID (for aliquots/splits) |
 | TUBE_TYPE | VARCHAR2 8 | Tube type |
 | TUBE_NAME | VARCHAR2 23 | Tube name |
 | TUBE_SUBTYPE | VARCHAR2 8 | Tube subtype |
-| TUBE_CAPACITY | NUMBER 10 | Tube capacity |
-| SPECIMEN_VOLUME | NUMBER 10 | Volume |
-| IS_LABELLED | NUMBER 5 | Labelled flag |
-| IS_ALIQUOTED | NUMBER 5 | Aliquoted flag |
-| IS_DISCARDED | NUMBER 5 | Discarded flag |
-| IS_MICRO | NUMBER 5 | Micro specimen flag |
+| TUBE_CAPACITY | NUMBER 22 | Tube capacity |
+| SPECIMEN_VOLUME | NUMBER 22 | Volume |
+| IS_LABELLED | NUMBER 22 | Labelled flag |
+| IS_ALIQUOTED | NUMBER 22 | Aliquoted flag |
+| IS_DISCARDED | NUMBER 22 | Discarded flag |
+| IS_MICRO | NUMBER 22 | Micro specimen flag |
+| IS_ROBOTIC | NUMBER 22 | Robotic-handled flag |
+| FAKE_SPECIMEN_TUBE | NUMBER 22 | Fake/placeholder tube flag |
+| LIST_NUMBER | NUMBER 22 | List number |
+| FLAGS | NUMBER 22 | Flags bitmask |
 | RECEIPT_DT | DATE | Receipt date/time |
-| RECEIPT_TECH | VARCHAR2 16 | Receipt tech |
-| RECEIPT_LOC | VARCHAR2 11 | Receipt location |
-| DELIVERY_LOC | VARCHAR2 20 | Delivery location |
+| SPECIMEN_RECEIPT_TECH | VARCHAR2 16 | Receipt tech (formerly documented as RECEIPT_TECH) |
+| SPECIMEN_RECEIPT_LOCATION | VARCHAR2 11 | Receipt location (formerly documented as RECEIPT_LOC) |
+| SPECIMEN_RECEIPT_DATE | NUMBER 22 | Receipt date (numeric — see RECEIPT_DT for DATE form) |
+| SPECIMEN_RECEIPT_TIME | NUMBER 22 | Receipt time (numeric) |
+| DELIVERY_LOCATION | VARCHAR2 20 | Delivery location (formerly documented as DELIVERY_LOC) |
+| PROCESSING_INSTRUCTION | VARCHAR2 8 | Processing instruction code |
+| SHIPPING_CONTAINER | VARCHAR2 8 | Shipping container code |
+| TEMPERATURE | CHAR 1 | Temperature code |
+| TEMPERATURE_SHIPPING_ID | CHAR 1 | Shipping temperature code |
+| TEMPERATURE_SHIPPING_VALUE | NUMBER 22 | Shipping temperature value |
+| EXEC_PRIORITY | CHAR 1 | Execution priority |
+| TUBE_PURPOSE | CHAR 1 | Tube purpose code |
+| COMMENTS | CLOB | Tube comments |
+| SPECIMEN_SORT | VARCHAR2 | Specimen sort |
+| TUBES_SORT | VARCHAR2 | Tubes sort |
+
+**Notes:**
+- Column names corrected vs. prior dictionary: use `SPECIMEN_RECEIPT_TECH` (not `RECEIPT_TECH`), `SPECIMEN_RECEIPT_LOCATION` (not `RECEIPT_LOC`), `DELIVERY_LOCATION` (not `DELIVERY_LOC`).
+- `RECEIPT_DT` (DATE) is the timestamp field; `SPECIMEN_RECEIPT_DATE`/`SPECIMEN_RECEIPT_TIME` are separate numeric date/time components.
 
 ### V_P_LAB_MISCEL_INFO — Patient/Stay/Order additional data
 
@@ -376,6 +428,35 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 
 **Note:** Bridges tubes to specimens. Used in specimen counting queries (e.g., SCC_Sample_Eval) to navigate from test results through tubes to distinct specimens: `V_P_LAB_TEST_TO_TUBE.TUBE_AA_ID → V_P_LAB_SPECIMEN_TUBE.TUBE_AA_ID → V_P_LAB_SPECIMEN.AA_ID`.
 
+### V_P_LAB_CANCELLATION — Cancelled test/order/specimen records
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 22 | PK (NOT NULL) |
+| CANCELLATION_DATE | NUMBER 22 | Cancellation date as YYYYMMDD integer |
+| CANCELLATION_TIME | NUMBER 22 | Cancellation time as HHMM integer (leading zero stripped because NUMBER — e.g., `713` = 07:13, `2013` = 20:13) |
+| CANCELLATION_DT | DATE | Cancellation timestamp (canonical — prefer over the numeric DATE/TIME pair) |
+| TECH_ID | VARCHAR2 16 | Cancelling user (FK → V_S_LAB_PHLEBOTOMIST.ID) |
+| REASON | VARCHAR2 1024 | Free-text cancellation reason — see notes |
+| ORDERED_TEST_AA_ID | NUMBER 22 | FK → V_P_LAB_ORDERED_TEST.AA_ID (set when an entire ordered test is cancelled) |
+| SPECIMEN_AA_ID | NUMBER 22 | FK → V_P_LAB_SPECIMEN.AA_ID (set when a specimen is cancelled) |
+| TEST_RESULT_AA_ID | NUMBER 22 | FK → V_P_LAB_TEST_RESULT.AA_ID (set when an individual test result is cancelled) |
+| ORDERING_PATTERN_AA_ID | NUMBER 22 | FK → V_P_LAB_ORDERING_PATTERN.AA_ID (set when a standing-order pattern is cancelled) |
+| CODE | VARCHAR2 10 | Categorical reason code — schema slot exists but **completely unused in this deployment** (0 of 1.5M rows populated in 3-month sample). REASON is the only classification field actually written. |
+
+**Notes:**
+- Active table: ~60.7M rows since 2016-04-27, ~17K cancellations/day.
+- **The four FK columns form a discriminated union — exactly one is populated per row** (`ORDERED_TEST_AA_ID` OR `SPECIMEN_AA_ID` OR `TEST_RESULT_AA_ID` OR `ORDERING_PATTERN_AA_ID`); the other three are NULL. The populated FK identifies *what level* was cancelled.
+  - **Implication for joins:** `INNER JOIN ... ON pcanc.TEST_RESULT_AA_ID = tr.AA_ID` matches only result-level cancellations and silently skips order-, specimen-, and pattern-level rows. Fine for "cancelled results" reports, wrong for "cancelled orders" reports — for those, join on `ORDERED_TEST_AA_ID` or use `V_P_LAB_ORDERED_TEST.CANCELLED_FLAG`.
+  - ~98% of distinct `TEST_RESULT_AA_ID` values have exactly one cancellation row (1:1 in the typical case — joins won't inflate row counts).
+- **`REASON` is free text with a partial canned vocabulary**, not an enum:
+  - **Canned templates** (top by volume in 3-month sample): "Test Not Performed. Specimen Never Received", "Patient Discharge", "Specimen not collected. Tests not performed", "Patient refused collection.", "Duplicate request.", "Specimen not received", "No sample received.", "Patient is a difficult stick…", "Clotted specimen, test cannot be performed.", "Patient Unavailable; Test rescheduled.", "Wrong Test Ordered.", "Questionable results/new specimen requested.", "Quantity not sufficient.", "Hemolyzed sample".
+  - **System-generated**: `RBS_TRGC_CANC` (Rules-Based System trigger), `NOT_COLLECTED_TUBE_COMMENT` (workflow auto-cancel), "Test was canceled by calculation".
+  - **Audit-style**: "Cancelled by LASTNAME, FIRSTNAME" appears thousands of times across hundreds of distinct names — system-prepended audit text, not a human-entered reason.
+  - **Severe normalization issues**: case variants ("Duplicate" / "duplicate" / "DUPLICATE" / "Dup" / "DUP" / "duplicae" / "Dupp"), trailing-space variants of the same canned reason, embedded RN names and patient context.
+  - **For grouping/reporting**: normalize at minimum with `TRIM(UPPER(REASON))` and accept that semantic buckets (e.g., "Duplicate" of any form) need fuzzy/regex bucketing. `CODE` would be the cleaner key but it is empty here.
+- **PHI caveat**: `REASON` frequently contains nurse names, patient behaviors ("AMA", "expired", "discharged"), clinical context, and free-form narrative. Treat as PHI-adjacent free text — never paste into shared docs or external tools.
+
 ### V_S_LAB_COLL_CENTER — Multisite ordering locations / collection centers
 
 | Column | Type | Description |
@@ -393,8 +474,8 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 | AA_ID | NUMBER 14 | PK |
 | ID | VARCHAR2 15 | Clinic code |
 | NAME | VARCHAR2 100 | Clinic name |
-| ORD_LOCATION_ID | VARCHAR2 15 | Ordering location / collection center ID |
-| FACILITY | VARCHAR2 20 | Hospital code |
+| ORD_LOCATION_ID | VARCHAR2 15 | Ordering location / collection center ID — the authoritative facility grouping in practice |
+| FACILITY | VARCHAR2 20 | Hospital code — NOTE: often blank/null in this system; use ORD_LOCATION_ID instead |
 | ACTIVE | VARCHAR2 1 | Active flag (Y/N) |
 | BILLING | VARCHAR2 23 | Billing number |
 | LICENSE | VARCHAR2 11 | License number |
@@ -416,6 +497,31 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 | ACTIVE | VARCHAR2 1 | Active flag (Y/N) |
 | TYPE | VARCHAR2 3 | Type: G=DoctorGroup, I=Institution, N=Non staff, S=Staff, T=Temporary |
 | SECONDARY_ID | VARCHAR2 15 | Secondary ID |
+
+### V_S_LAB_PHLEBOTOMIST — Collector/phlebotomist setup
+
+| Column | Type | Description |
+|--------|------|-------------|
+| ID | VARCHAR2 16 | Collector code (matches V_P_LAB_TUBEINFO.COLLECTION_PHLEB, V_P_LAB_TUBE.RECEIPT_TECH, etc.) |
+| LAST_NAME | VARCHAR2 51 | Last name |
+| FIRST_NAME | VARCHAR2 51 | First name |
+| MIDDLE_NAME | VARCHAR2 31 | Middle name |
+| STREETI | VARCHAR2 | Street address |
+| CITY | VARCHAR2 | City |
+| STATE | VARCHAR2 | State |
+| ZIP | VARCHAR2 | ZIP |
+| PHONE | VARCHAR2 | Phone |
+| SSN | VARCHAR2 | SSN |
+| NOTES | VARCHAR2 | Notes |
+| NURSE | VARCHAR2 1 | Nurse flag (Y/N) — identifies nursing-staff collectors vs. phlebotomists/other |
+| ACTIVE | VARCHAR2 1 | Active flag (Y/N) |
+
+**Collector-type decoding:**
+- Table mixes individual-user records and generic "role" codes. Generic codes observed: `NUR` (NURSINGSTAFF COLLECTED, NURSE=Y), `PHLEB` (DEFAULT PHLEBOTOMIST, NURSE=N), `PHY` (PHYSICIAN COLLECTED), `PAT` (PATIENT COLLECTED), `UNK` (UNKNOWN COLLECTOR), `SCC` (SCC TESTING ONLY, ACTIVE=N).
+- **Full roster is only 57 rows** (10 NURSE=Y, 47 NURSE=N, 56 ACTIVE=Y, 1 ACTIVE=N) — this is not a sample, it is the entire table. **Do NOT treat this as the authoritative collector list** — the real collector workforce appears to flow through Epic/HIS and bypasses this table. Only ~9% of the roster shows up in `V_P_IDN_LOG` monthly, and zero of the 10 NURSE=Y users have SoftID activity.
+- `NURSE='Y'` flag IS accurate where populated (Q5 confusion matrix: zero mismatches) — but populated for ~2% of actual collectors. Use as a narrow high-confidence overlay, never as the primary classifier.
+- Primary collector classification should come from `V_P_IDN_LOG` behavior + ID name patterns + HIS pass-through detection (see memory `project_unknown_collector_three_signals.md`).
+- For collector-type reporting when NURSE flag IS present: Nurse (NURSE='Y'), Other/Generic (ID in `PAT`/`PHY`/`UNK`/`PHLEB`), Phlebotomist (everything else).
 
 ### V_S_LAB_LOCATION — Location definition
 
@@ -1632,8 +1738,12 @@ Single-letter columns (S, T, U, V, W, X, Y, Z, A1–Z1, D–P, F_0–F_9, ZZ1, Z
 
 | View | Notes |
 |------|-------|
-| V_P_IDN_LOG | Used in `draw_by_location` query. Columns: PATIENT_ID, SPECIMEN_ID, PHLEB_ID, ROLE_ID, DEVICE_ID, TERMINAL_ID, LOG_DT, EVENT, MESSAGE. Likely an ID/barcode scanning event log — not documented in the provided SCC dictionaries. |
+| V_P_IDN_LOG | SoftID scan/event log. Columns: AA_ID (NUMBER 22), SITE_ID (5), USER_ID (51), ROLE_ID (15), PHLEB_ID (51), EVENT (31), PATIENT_ID (23), SPECIMEN_ID (13), WARD_ID (15), DEVICE_ID (51), TERMINAL_ID (5), MESSAGE (2048), LOG_DT/LOG_DT_SERVER/LOG_DT_UTC/LOG_DT_DEV (DATE). **Validated facts:** `ROLE_ID` DOES resolve cleanly to `V_S_IDN_ROLE.ID` (every observed value matched except one blank/NULL-ish string). Values include both ward codes (TUH7E, JNS3C, CHH4S, AOH1C...) and functional codes (RNBLD, RNNONBLD, RNEDALL, *PCALL). `ROLE_ID` is populated on **every event type except `LoginToSoftID`** — it's a reliable role signal across all events, not just `RoleSelection`. `PHLEB_ID` is the collector-identity join key (matches `V_P_LAB_TUBEINFO.COLLECTION_PHLEB`); `USER_ID` is a different value — validated that zero collectors match via `USER_ID` when `PHLEB_ID` doesn't. `EVENT` enum observed: UploadCollection, LabelPrinted, CollectionListDownload, RoleSelection, PatientCollectionQuery, LoginToSoftID, LogOffFromSoftID, MicroSourceSiteUpdated, PatientMismatch, KeyedPatientCollectionQuery, SpecimenMismatch. Canonical nurse-role list (from `V_S_IDN_ROLE` by NAME): `RNBLD`, `RNNONBLD`, `RNEDALL` — but in observed monthly data, essentially only `RNBLD` fires (135K events/month vs. 0 for the others). Use IN-list for classification, never pattern matching — `TUHBLD` ("TUH Bleeding Time") would be a false positive on any `%BLD` pattern. |
 | V_P_GCM_OTESTRESULT | GCM (likely General Communication Module) test results table with columns GP_OTR_*. Appears to be for Cytogenetics/Pathology results based on column names (KTYPE, KARYOTYPE, ABNCH, METACELLS, INTERCELLS, etc.). Table exists but is **empty in production** — not useful for standard lab TAT queries. Use V_P_LAB_TEST_RESULT instead. |
+| V_P_GCM_QUEUEMSG / V_P_GCM_MOMCALL / V_P_GCM_QUEUE / V_P_GCM_QUEUEPAR | GCM HIS↔LIS interface queue/message tables. Schema looks promising for raw HL7 storage (`GP_QUEM_MSG` CLOB, `GP_MOMCALL_MESSAGE` BLOB, ORDNUM/HISNUM/LISNUM keys, MOM event/status fields), but **all are empty in this deployment** — including the underlying `LAB.GP_QUEUEMSG` / `LAB.GP_MOMCALL` base tables. HL7 messages are not persisted in Oracle here, so raw OBR[11] cannot be retrieved from these views. Use `V_P_LAB_SPECIMEN.NURSE_COLL` (LIS-stored OBR[11]) for nurse-vs-lab collect classification instead. |
+| SoftID (IDN) family | 18 views: `V_P_IDN_LOG`, `V_LAB_IDN_ROUTE`, `V_S_IDN_ASSIGN`, `V_S_IDN_DEVICE_OPTION`, `V_S_IDN_DOMAIN`, `V_S_IDN_DOMAIN_{CANMSG,LBLFMT,MESSAGE,PARAM,PRNMODEL,SOUND}`, `V_S_IDN_FOLDER`, `V_S_IDN_ROLE`, `V_S_IDN_ROLE_{FOLDER,PARAM,ROUTE,TEST,TUBE}`. SoftID is SCC's specimen-ID / barcode-scanning module. Key views: `V_S_IDN_ROLE` (AA_ID, DOMAIN_ID, ID, NAME + timestamps) and `V_S_IDN_ASSIGN` (AA_ID, TECH_ID, ROLE_AA_ID, IS_ACTIVE, USER_LOGIN_ID, ROLE_ID). **Roles are ward-scoped, not job-scoped** — do not use for Nurse/Phleb classification (see memory `project_softid_role_model.md`). For collector-type, use `V_S_LAB_PHLEBOTOMIST.NURSE`. |
+| USER_COMPARISON_SCAN / _SUMMARY / _VALUES | Custom (non-SCC) views — no `V_` prefix. Likely hospital-built reporting views; not part of SoftID or standard SCC modules. |
+| V_S_GCM_{GROSSCANNED,IMGSCANNEDCAT,SCANNER} | Pathology grossing/imaging module (same `GCM` family as the empty `V_P_GCM_OTESTRESULT`). Not relevant for blood-bank / chemistry / specimen-collection queries. |
 
 ---
 
