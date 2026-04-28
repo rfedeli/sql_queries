@@ -897,45 +897,89 @@ Two parallel blocks: `P_R_I_*` (cols 223–231) and `PRI_*` (cols 232–240) for
 
 ### V_P_LAB_TUBE — Ordered specimen / tube info
 
+**33 columns total** — bridges V_P_LAB_ORDER and V_P_LAB_SPECIMEN. Volume: ~9.1K rows/day, ~1.04 tubes per specimen, ~1.5 tubes per order, **3.68% are aliquots** (PARENT_TUBE_AA_ID populated).
+
+#### Identity & Joins
+
 | Column | Type | Description |
 |--------|------|-------------|
-| AA_ID | NUMBER 22 | PK |
-| ORDER_AA_ID | NUMBER 22 | FK → V_P_LAB_ORDER.AA_ID |
+| AA_ID | NUMBER 22 | PK (NOT NULL) |
+| ORDER_AA_ID | NUMBER 22 | FK → V_P_LAB_ORDER.AA_ID. **This is the canonical specimen→order linkage** (the column of the same name on V_P_LAB_SPECIMEN is vestigial) |
 | SPECIMEN_AA_ID | NUMBER 22 | FK → V_P_LAB_SPECIMEN.AA_ID |
-| PARENT_TUBE_AA_ID | NUMBER 22 | FK → parent V_P_LAB_TUBE.AA_ID (for aliquots/splits) |
-| TUBE_TYPE | VARCHAR2 8 | Tube type |
-| TUBE_NAME | VARCHAR2 23 | Tube name |
+| PARENT_TUBE_AA_ID | NUMBER 22 | FK → parent V_P_LAB_TUBE.AA_ID (for aliquots/splits). **Use this for aliquot detection — `IS_ALIQUOTED` flag is vestigial** |
+
+#### Tube Identity
+
+| Column | Type | Description |
+|--------|------|-------------|
+| TUBE_TYPE | VARCHAR2 8 | Tube type code. **80+ distinct values** observed in 7-day data: color codes (GREEN 22%, LAVENDER 16%, GOLD 5.3%, BLUE, GRAY, PNK, etc.), POC virtual (20%), specialty (URPRSV, HEPSYR, MICSTER, MICBLCLT, BLUPLAS), aliquot-marked variants (`*ALQ`/`*AQ` suffix). **Includes literal text value `'NULL'` (5.1%, 3,223 rows) — distinct from database NULL.** Predicates: `WHERE TUBE_TYPE = 'NULL'` for the text vs `WHERE TUBE_TYPE IS NULL` for the database null |
+| TUBE_NAME | VARCHAR2 23 | Display name (often lowercase, e.g. `'poc'`). More descriptive than `TUBE_TYPE`; may not exactly mirror the type code |
 | TUBE_SUBTYPE | VARCHAR2 8 | Tube subtype |
-| TUBE_CAPACITY | NUMBER 22 | Tube capacity |
-| SPECIMEN_VOLUME | NUMBER 22 | Volume |
-| IS_LABELLED | NUMBER 22 | Labelled flag |
-| IS_ALIQUOTED | NUMBER 22 | Aliquoted flag |
-| IS_DISCARDED | NUMBER 22 | Discarded flag |
-| IS_MICRO | NUMBER 22 | Micro specimen flag |
-| IS_ROBOTIC | NUMBER 22 | Robotic-handled flag |
-| FAKE_SPECIMEN_TUBE | NUMBER 22 | Fake/placeholder tube flag |
-| LIST_NUMBER | NUMBER 22 | List number |
-| FLAGS | NUMBER 22 | Flags bitmask |
-| RECEIPT_DT | DATE | Receipt date/time |
-| SPECIMEN_RECEIPT_TECH | VARCHAR2 16 | Receipt tech (formerly documented as RECEIPT_TECH) |
-| SPECIMEN_RECEIPT_LOCATION | VARCHAR2 11 | Receipt location (formerly documented as RECEIPT_LOC) |
-| SPECIMEN_RECEIPT_DATE | NUMBER 22 | Receipt date (numeric — see RECEIPT_DT for DATE form) |
-| SPECIMEN_RECEIPT_TIME | NUMBER 22 | Receipt time (numeric) |
-| DELIVERY_LOCATION | VARCHAR2 20 | Delivery location (formerly documented as DELIVERY_LOC) |
+| TUBE_CAPACITY | NUMBER 22 | Capacity (likely µL — POC virtual tubes show 1000 = 1mL) |
+| SPECIMEN_VOLUME | NUMBER 22 | Actual specimen volume |
+
+#### Receipt Workflow
+
+| Column | Type | Description |
+|--------|------|-------------|
+| RECEIPT_DT | DATE | Receipt date/time (canonical — prefer this) |
+| SPECIMEN_RECEIPT_DATE | NUMBER 22 | Receipt date (numeric YYYYMMDD) |
+| SPECIMEN_RECEIPT_TIME | NUMBER 22 | Receipt time (numeric HHMM) |
+| SPECIMEN_RECEIPT_TECH | VARCHAR2 16 | Receipt tech (FK by code → V_S_LAB_PHLEBOTOMIST.ID). `AUTOV` for auto-verifier system flows (recurring system-user across views) |
+| SPECIMEN_RECEIPT_LOCATION | VARCHAR2 11 | Receipt location code |
+| DELIVERY_LOCATION | VARCHAR2 20 | Delivery location code |
 | PROCESSING_INSTRUCTION | VARCHAR2 8 | Processing instruction code |
+
+#### Shipping & Temperature
+
+| Column | Type | Description |
+|--------|------|-------------|
 | SHIPPING_CONTAINER | VARCHAR2 8 | Shipping container code |
-| TEMPERATURE | CHAR 1 | Temperature code |
+| TEMPERATURE | CHAR 1 | Temperature code. Observed enum: blank (72%), `A` (Ambient, 25%), `R` (Refrigerated, 2.5%), `F` (Frozen, 0.8%). **Most tubes have no temperature recorded** |
 | TEMPERATURE_SHIPPING_ID | CHAR 1 | Shipping temperature code |
 | TEMPERATURE_SHIPPING_VALUE | NUMBER 22 | Shipping temperature value |
-| EXEC_PRIORITY | CHAR 1 | Execution priority |
-| TUBE_PURPOSE | CHAR 1 | Tube purpose code |
-| COMMENTS | CLOB | Tube comments |
-| SPECIMEN_SORT | VARCHAR2 | Specimen sort |
-| TUBES_SORT | VARCHAR2 | Tubes sort |
+
+#### Priority
+
+| Column | Type | Description |
+|--------|------|-------------|
+| EXEC_PRIORITY | CHAR 1 | Execution priority. Enum: `R` (Routine, 67%), `S` (Stat, 25%), `T` (Timed, 8%); rare `U` (1 row) and blank (12 rows). Same R/S/T pattern as other priority fields |
+
+#### Workflow Flags (all NUMBER 22 — 0/1 numeric, NOT VARCHAR2 Y/N)
+
+| Column | Description |
+|--------|-------------|
+| `IS_LABELLED` | Labelled flag — meaningful signal: 70% labelled, 30% not. Useful for received-but-not-labeled exception reports |
+| `IS_MICRO` | Micro specimen — 6.2% Y. Cross-validates V_P_LAB_SPECIMEN's IS_MICRO=6.5% |
+| `IS_DISCARDED` | Discarded — rarely set (0.05% of tubes). Real but tiny signal |
+| `FAKE_SPECIMEN_TUBE` | Fake/placeholder — 5.1% of tubes. Independent of `TUBE_TYPE='FAKE1'` (the type-code naming) |
+| `IS_ALIQUOTED` | **VESTIGIAL — never set in 7-day data** (0% of 63,625 rows). Use `PARENT_TUBE_AA_ID IS NOT NULL` to detect aliquots |
+| `IS_ROBOTIC` | **VESTIGIAL — never set in 7-day data**, despite the system having robotic instruments. Don't trust as an automation indicator |
+| `TUBE_PURPOSE` | CHAR 1 — **VESTIGIAL — 100% blank** in 7-day data. Schema slot, never populated |
+
+#### Other
+
+| Column | Type | Description |
+|--------|------|-------------|
+| LIST_NUMBER | NUMBER 22 | Collection list number — shared across tubes in the same list |
+| FLAGS | NUMBER 22 | Flag bitmask — observed `0` in samples |
+| COMMENTS | CLOB 4000 | Tube comments |
+
+#### Empty / Vestigial (DATA_LENGTH = 0 — schema slots, never written)
+
+`SPECIMEN_SORT` (col 12), `TUBES_SORT` (col 14). Don't use in queries.
 
 **Notes:**
-- Column names corrected vs. prior dictionary: use `SPECIMEN_RECEIPT_TECH` (not `RECEIPT_TECH`), `SPECIMEN_RECEIPT_LOCATION` (not `RECEIPT_LOC`), `DELIVERY_LOCATION` (not `DELIVERY_LOC`).
-- `RECEIPT_DT` (DATE) is the timestamp field; `SPECIMEN_RECEIPT_DATE`/`SPECIMEN_RECEIPT_TIME` are separate numeric date/time components.
+
+- **Volume**: ~9.1K tubes/day; ~1.04 tubes per specimen, ~1.5 tubes per order, **3.68% aliquot rate** (PARENT_TUBE_AA_ID populated).
+- **Aliquot detection**: use `PARENT_TUBE_AA_ID IS NOT NULL`, NOT `IS_ALIQUOTED` (vestigial).
+- **`IS_ROBOTIC` and `TUBE_PURPOSE` are vestigial** in current operations — don't filter on them.
+- **Three "vestigial" flags** (`IS_ALIQUOTED`, `IS_ROBOTIC`, `TUBE_PURPOSE`) compose a notable schema-vs-reality gap pattern matching prior discoveries (cf. `ASSIGNED_TO_PHLEB`, `ADMIT_FLAG`, etc.).
+- **`TUBE_TYPE = 'NULL'` is a literal text value** (3,223 rows / 5.1%) — distinct from database NULL. Avoid the `IS NULL` vs `= 'NULL'` confusion.
+- **`AUTOV` recurs as `SPECIMEN_RECEIPT_TECH`** — same auto-verifier system-user we saw on V_P_LAB_ORDERED_TEST. Global system identity, not view-specific.
+- **POC tubes carry minimal data** — virtual tubes have no volume, no parent, no temperature, no shipping; only basic receipt metadata.
+- **Column names corrected vs. earlier dictionary**: use `SPECIMEN_RECEIPT_TECH` (not `RECEIPT_TECH`), `SPECIMEN_RECEIPT_LOCATION` (not `RECEIPT_LOC`), `DELIVERY_LOCATION` (not `DELIVERY_LOC`).
+- `RECEIPT_DT` (DATE) is the canonical timestamp; `SPECIMEN_RECEIPT_DATE`/`SPECIMEN_RECEIPT_TIME` are the separate numeric date/time components.
 
 ### V_P_LAB_MISCEL_INFO — Patient/Stay/Order additional data
 
