@@ -863,11 +863,31 @@ When a result is corrected, SCC's chemistry/general report engine prints a one-l
 
 > `Corrected result; previously reported as {h.PREV_RESULT} on {h.VER_DT date} at {h.VER_DT time} by {h.VER_TECH}`
 
-Verified by test-env amendment + cross-search against `V_S_LAB_CANNED_MESSAGE.TEXT`, `tr.COMMENTS`, `h.MOD_REASON`, `h.PREV_COMMENT`, and `V_P_LAB_INTERNAL_NOTE.NOTE_TEXT` — none of those carry this exact template. Conclusion: **the chemistry/general correction notice is hard-coded in SCC's report engine binary**, generated at print time from history-row fields. The data fields it reads are exposed exactly as documented above (`h.PREV_RESULT`, `h.VER_DT`, `h.VER_TECH`).
+Verified by test-env amendment + comprehensive RMOD-scoped text sweep across 18 candidate columns (90-day window, 12,538 RMOD-amended results in cohort). **Zero matches for the canonical "Corrected result; previously reported as" template anywhere in the relational store.** Sweep coverage:
+
+- Result-level: `tr.COMMENTS`, `V_P_LAB_MESSAGE.TEXT`
+- History rows: `h.PREV_COMMENT`, `h.MOD_REASON`, `V_P_LAB_ACT_HISTORY.PREV_COMMENT`
+- Order-level: `o.NOTES`, `o.COMMENTS`, `V_P_LAB_INTERNAL_NOTE.NOTE_TEXT`
+- Stay-level: `st.COMMENTS`, `st.MSPQ`
+- Cancel/billing: `V_P_LAB_CANCELLATION.REASON`, `V_P_LAB_BILLING_EVENT.REASON`
+- Call family: `V_P_LAB_CALL.REASON/MESSAGE`, `V_P_LAB_CALL_DOCUM.REASON/MESSAGE`, `V_P_LAB_CALL_REQUEST.REASON`, `V_P_LAB_CALL_INTNOTE.MESSAGE`
+- Other: `V_P_LAB_PROMPT_TEST.COMMENT_TEXT`, `V_S_LAB_CANNED_MESSAGE.TEXT`
+- Eliminated by schema: `V_P_LAB_REPORT` (no body CLOB column exists), `V_P_LAB_PATHOLOGY_REVIEW` (metadata-only, no narrative)
+
+Total of 15 false-positive hits across all 18 locations — all confirmed (or strongly suspected) tech-authored critical-callback prose that idiomatically starts with "Corrected result called to Dr. X" or "Corrected results, notified Dr. Y by Z" — none contain the "previously reported as" phrase that marks the system template.
+
+Conclusion: **the chemistry/general correction notice is hard-coded in SCC's report engine binary**, generated at print time from history-row fields and never persisted. The data fields it reads are exposed exactly as documented above (`h.PREV_RESULT`, `h.VER_DT`, `h.VER_TECH`).
 
 Note that the printed timestamp is the **original verification time** (`h.VER_DT`), not the amendment time (`h.MOD_DT`). And the printed tech is the **original verifier** (`h.VER_TECH`), not the amender (`h.MOD_TECH`).
 
 Microbiology reports use a *different* notice ("This is a corrected report. Previously reported as:") — that one IS stored in `V_S_LAB_CANNED_MESSAGE` under IDs `&CORR` and `}CORR` (categories `MICI` and `MICT`). Two correction-notice templates exist in this deployment: hard-coded for chemistry/general, canned-message-driven for microbiology.
+
+#### Side-finding: tr.COMMENTS stores RTF + critical-callback narrative
+
+The 10 false-positive hits in `tr.COMMENTS` revealed two operational patterns worth knowing for any query that exposes COMMENTS to a user-facing report:
+
+1. **`tr.COMMENTS` is RTF-formatted, not plain text** — comment bodies start with `{\rtf1\ansi\deff0\nouicompat{\fonttbl{\f0\fnil Courier New;}}...` followed by `\pard\f0\fs20\lang1033 <body text>\par\n}`. Displaying COMMENTS verbatim shows the raw RTF wrapper. For human-readable display, strip via `REGEXP_REPLACE(c, '\\[a-z0-9]+ ?|\{|\}|\\par', '', 'i')` (lossy but acceptable for narrative).
+2. **Critical-callback documentation pattern** — when a corrected result requires physician notification, techs write narrative into `tr.COMMENTS` with idioms like "Corrected result called to Dr. X on DATE TIME" or "Corrected results, notified Dr. Y by Z DATE TIME". This is queryable as a "corrections-with-callback-documentation" surface — case-insensitive `tr.COMMENTS LIKE '%Corrected%'` on `STATE='Corrected'` rows, with the RTF stripper above for display.
 
 #### Sibling live-row signals on V_P_LAB_TEST_RESULT
 

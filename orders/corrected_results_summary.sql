@@ -28,8 +28,10 @@ Filters
   - tr.EDITED_FLAG = 'Y' — the live-row "E" indicator from SCC's
     client status column. Redundant with STATE='Corrected' for
     routine amendments; both fire on a freshly-amended row.
-  - Value actually changed (null-safe DECODE) — drops DMOD non-value
-    edits and any RMOD that didn't ultimately move the value.
+  - TYPE='RMOD' — SCC's "Result-value modification" tag. Drops DMOD
+    (comment-only / range / calc-component edits) and REVMOD (rare
+    review events). RMOD/DMOD/REVMOD enum distribution verified in
+    setup/test_result_history_probe.sql §2.
   - :DEPOT on COLLECT_CENTER_ID (LIKE wildcards supported)
   - System / interface amendments excluded — MOD_TECH NOT IN
     (HIS, SCC, AUTOV, RBS, I/AUT, AUTON). Inventory verified via
@@ -62,6 +64,7 @@ WITH qualifying_atests AS (
 hist_full AS (
     SELECT
         h.ATEST_AA_ID,
+        h.TYPE,
         h.MOD_DT,
         h.MOD_TECH,
         h.PREV_RESULT,
@@ -91,7 +94,5 @@ WHERE hf.MOD_DT >= TO_DATE(:START_DATE, 'YYYYMMDD')
   AND REGEXP_LIKE(pt.ID, '^E[0-9]+$')
   AND tr.EDITED_FLAG = 'Y'
   AND hf.MOD_TECH NOT IN ('HIS','SCC','AUTOV','RBS','I/AUT','AUTON')
-  AND DECODE(hf.PREV_RESULT,
-             COALESCE(hf.next_prev_result, tr.RESULT),
-             1, 0) = 0
+  AND hf.TYPE = 'RMOD'
 ORDER BY pt.ID, o.ID, tr.TEST_ID, hf.MOD_DT;
