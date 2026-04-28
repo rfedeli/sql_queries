@@ -1814,20 +1814,98 @@ Large table (100+ columns). Key columns grouped by category below.
 
 ### V_P_BB_Result — Blood bank test result
 
+**57 columns total** — child of V_P_BB_Test. Volume: ~473 result rows/day over a 30-day window (14,187 rows). ~1.54 results per Test row, ~1.92 results per Order. No DATA_LENGTH=0 vestigial columns.
+
+**Naming correction from prior dictionary:** the positional result slots are named `RESULT0`, `RESULT1`, …, `RESULT23` (single-digit, 0-indexed — 24 slots). The earlier doc said `RESULT01–RESULT23` which was incorrect.
+
+#### Identity & Joins
+
 | Column | Type | Description |
 |--------|------|-------------|
-| AA_ID | NUMBER 14 | PK |
-| ORDERNO | VARCHAR2 11 | FK → V_P_BB_BB_Order.ORDERNO |
-| TEST_RESULT | NUMBER 14 | FK → V_P_BB_Test.AA_ID |
-| CODE | VARCHAR2 5 | Result code |
-| STATUS | CHAR 1 | Status |
-| RESULTNO | NUMBER 5 | Sequential result number |
-| RESULTEDDT | DATE | Resulted date/time |
-| REVIEWDT | DATE | Review date/time |
-| SUP_REVIEWDT | DATE | Supervisory review date/time |
-| FIRST_REPORTEDDT | DATE | First reported date/time |
+| AA_ID | NUMBER 22 | PK (NOT NULL) |
+| TEST_RESULT | NUMBER 22 | **FK → V_P_BB_Test.AA_ID** (counterintuitive name — this is the parent-test FK, not result content) |
+| ORDERNO | VARCHAR2 11 | Order number — denormalized from V_P_BB_BB_Order |
+| ALT_BILLINGNO | VARCHAR2 23 | Alternate billing identifier (semantics unverified — width matches Epic CSN shape but no direct evidence of equivalence) |
+| RESULTNO | NUMBER 22 | Sequential result number within parent |
+| ROOT_RESULTNO | NUMBER 22 | Root result number — paired with `VERSION` for amendment tracking (semantics inferred from naming; not directly verified) |
+| VERSION | NUMBER 22 | Version/iteration counter for amended results (inferred from naming) |
+| SPECIMENNO | NUMBER 22 | Specimen number FK (observed `0` in samples — population unknown) |
+
+#### Result Content
+
+| Column | Type | Description |
+|--------|------|-------------|
+| CODE | VARCHAR2 5 | **Result-row component code — distinct from V_P_BB_Test.CODE.** A single Test row can produce multiple Result rows, each with its own component CODE. **Verified** by Q4 cardinality probe over 30 days (14,187 rows, top values: ABORH 38%, AS3 31%, RETYP 11%, NCABO 8%) and the V_P_BB_Test → V_P_BB_Result mapping (cross-validated by row counts; **direct Test↔Result CODE mapping not yet probed via JOIN — needs verification query V2**) |
+| RESULT0 ... RESULT23 | VARCHAR2 2 | Positional reaction-grade slots, 0-indexed (24 positions total). **Verified** that different test types use different position subsets (sampled NCABO uses 3 positions, ABORH uses ~6, AS3 uses 0–1). Values observed include `0`, `4+`, `NEG`, etc. — agglutination grades and short reaction codes. **Position-to-meaning mapping per CODE is NOT documented and would require running results against SCC test setup tables to verify** |
+| INTERPRETATION0 | VARCHAR2 5 | Short interpretation code. Observed values include `A` (likely ABO group A) — **semantic mapping inferred from 5-row sample, not verified across the population** |
+| INTERPRETATION1 | VARCHAR2 5 | Second interpretation slot. Observed values include `POS`, `NEG` — **semantic mapping inferred from 5-row sample** |
+| AUTOINT | RAW(2) | 2-byte binary auto-interpretation code. Displays as Java byte-array (`[B@xxxxxxxx`) in many SQL clients; use `RAWTOHEX(AUTOINT)` to inspect actual bytes. **Distinct value count not yet probed (verification query V4)** |
+| RESULT_COMMENT | VARCHAR2 26 | Comment field — only 26 characters wide (much shorter than V_P_LAB_TEST_RESULT's CLOB COMMENTS). Observed blank in 5-row sample |
+
+#### Dates
+
+| Column | Type | Description |
+|--------|------|-------------|
+| REQUESTEDDT | DATE | When result was requested |
+| RESULTEDDT | DATE | When the result was posted |
+| REVIEWDT | DATE | First review timestamp |
+| SUP_REVIEWDT | DATE | Supervisory review timestamp |
+| FIRST_REPORTEDDT | DATE | First report date/time |
 | BILLINGDT | DATE | Billing date/time |
-| RESULT01–RESULT23 | VARCHAR2 2 | Result values (positional) |
+
+#### People (three-tier review chain)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| TECH | VARCHAR2 16 | Resulting tech (FK by code → V_S_LAB_PHLEBOTOMIST.ID). Pairs with `RESULTEDDT` |
+| REVIEW_TECH | VARCHAR2 16 | First-review tech. Pairs with `REVIEWDT` |
+| SUP_REVIEW_TECH | VARCHAR2 16 | Supervisory-review tech. Pairs with `SUP_REVIEWDT` |
+
+Three-tier review chain: TECH (writes result) → REVIEW_TECH (reviews) → SUP_REVIEW_TECH (supervisor confirms). Most rows in samples have only TECH + REVIEW_TECH; supervisory review appears rare.
+
+#### Workstations
+
+| Column | Type | Description |
+|--------|------|-------------|
+| ORDERED_WORKSTATION | VARCHAR2 15 | Workstation where result was ordered (sampled values: TBB, TORT2) |
+| PERFORMING_WORKSTATION | VARCHAR2 15 | Performing workstation (blank in 5-row sample) |
+
+#### State & Flags
+
+| Column | Type | Description |
+|--------|------|-------------|
+| STATUS | CHAR 1 | Result status. **Verified enum** over 30 days (Q3, 14,187 rows): `C` (85.3%), `N` (14.7%). No other values appear. **Hypothesis (NOT yet verified)**: `C` = complete/reviewed; `N` = new/pending review. Verification query V1 tests this by joining STATUS to REVIEWDT-populated state |
+| CANCELLED_STATUS | CHAR 1 | Cancellation status. Sample values include `C` and `R`; full enum cardinality NOT yet probed |
+| FLAG | CHAR 1 | Generic flag (semantics unverified) |
+| RELATION | CHAR 1 | Relation flag (semantics unverified) |
+| BILLING_ACTIVE | CHAR 1 | Billing-active flag |
+| REPORT_FLAGS | NUMBER 22 | Report flag bitmask. Observed values: `575` (most), `63` — same recurring column across BB views |
+
+#### QC / Factors
+
+| Column | Type | Description |
+|--------|------|-------------|
+| QC_RACK | VARCHAR2 5 | QC rack identifier (e.g., `TUHQC`) — links result to QC batch tracking |
+| SYSTEM_FACTOR | NUMBER 22 | System factor (observed `0` in samples; semantics unverified) |
+| USER_FACTOR | NUMBER 22 | User factor (observed `0` and `1` in samples; semantics unverified) |
+
+**Notes:**
+
+- **Volume**: ~473 result rows/day; 14,187 rows over 30 days.
+- **`TEST_RESULT` is the FK to V_P_BB_Test.AA_ID** — counterintuitive name, but the column name on this view is the parent-test pointer, not the result content.
+- **`RESULT0`–`RESULT23` slot semantics differ per CODE.** Each test type uses its own subset of positions. The slot-to-reaction mapping for any given CODE is not documented in CLAUDE.md and would require additional probing against SCC test setup tables (or sampling per-CODE) to map definitively.
+- **Result-row CODE differs from parent Test CODE.** Q4 confirmed: a single TS3 Test row produces ABORH and AS3 Result rows (component-fanout pattern); cord tests appear to produce CRH/CABO/CDAT Result rows. **The exact Test.CODE → Result.CODE mapping is hypothesized from row-count math; verification query V2 tests it directly.**
+- **`STATUS` enum**: `C` (85%) / `N` (15%). **What `C` and `N` mean operationally is unverified** — see verification query V1.
+- **`AUTOINT` is RAW(2)** — opaque to SQL clients without `RAWTOHEX()`. Distinct-value count not yet probed.
+- **3-tier review chain**: TECH/REVIEW_TECH/SUP_REVIEW_TECH paired with RESULTEDDT/REVIEWDT/SUP_REVIEWDT.
+- **Result-side ORDERNO 7,389 distinct over 30 days** vs 8,622 BB orders → 1,233 BB orders generate no Result rows (most are inventory orders).
+
+#### Open verification work (hypotheses still in `bb_result_verification.sql`)
+
+- **V1**: STATUS='C' ⇔ REVIEWDT populated. Crosstab probe.
+- **V2**: V_P_BB_Test.CODE → V_P_BB_Result.CODE mapping (TS3 → ABORH+AS3, etc.). Direct join probe.
+- **V3**: CORD/NCORD → CRH+CABO+CDAT mapping. Same join probe handles this.
+- **V4**: AUTOINT distinct value count.
 
 ### V_P_BB_Test — Blood bank test
 
