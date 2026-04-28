@@ -828,6 +828,34 @@ Two parallel blocks: `P_R_I_*` (cols 223–231) and `PRI_*` (cols 232–240) for
 - **`MOD_TECH` ≠ original `VER_TECH`/`RES_TECH` is common** — the amender is often a different person than the original verifier (validated in test-env spot check).
 - **Per-view TYPE enums** — `V_P_LAB_ACT_HISTORY` and `V_P_LAB_TUBE_HISTORY` use `MODCOM` only; the RMOD/DMOD/REVMOD vocabulary is specific to test result history.
 - **TYPE values are empirically-decoded only** — no `V_S_*` lookup maps them to human descriptions. The closest-named candidate (`V_S_GCM_CORRECTIONDICT`) turned out to be a typo/spell-check dictionary, unrelated.
+- **`MOD_TECH` system-identity inventory**: four values verified by 90-day amendment-volume diagnostic (`setup/test_result_history_probe.sql` §42 + top-10 join-status query) — `HIS` (~11.4K/90d, HIS interface), `I/AUT` (~1.7K, instrument auto-feed; `I/` prefix matches SCC interface-directory pattern), `AUTON` (~1.1K, system identity; specific source not yet probed), `SCC` (~270, has a real `V_S_SEC_USER` row with LASTNAME='USER'). `HIS`, `I/AUT`, and `AUTON` are NOT in V_S_SEC_USER (unmatched on `TECH_ID = 'U'` join). Two more system identities — `AUTOV` (auto-verifier) and `RBS` (rules-based system) — are documented as system-user codes elsewhere in this dictionary (V_P_LAB_TUBE.SPECIMEN_RECEIPT_TECH, V_P_LAB_ORDERED_TEST.TECH_ID) but were NOT in the 90-day amendment top-10 — they may be very rare or absent here. The full IN list to use when filtering system-vs-human is `('HIS','SCC','AUTOV','RBS','I/AUT','AUTON')`; the hardcoded check fires before any V_S_SEC_USER lookup.
+
+#### Resolving amender to a person — V_S_SEC_USER (SCCODBC schema)
+
+`MOD_TECH` is a 3–5 char tech short-code that joins to `V_S_SEC_USER.TECH_ID` for `ROLE='U'` rows (the user accounts; `ROLE='R'` rows are role definitions stored inline in the same table — see V_S_SEC_USER profile). Validated chain:
+
+```sql
+LEFT JOIN V_S_SEC_USER usr ON usr.TECH_ID = hf.MOD_TECH
+                           AND usr.ROLE   = 'U'
+```
+
+For role enrichment, V_S_SEC_USERROLES is the live grant table (9,010 rows / 3,546 users; `V_S_SEC_USERSITEROLE` has only 20 rows and is essentially unused). The M:M FKs are to `V_S_SEC_USER.ID` (the negative-NUMBER column), NOT `AA_ID`:
+
+```sql
+JOIN V_S_SEC_USERROLES ur ON ur.USER_ID = u.ID  AND u.ROLE   = 'U'
+JOIN V_S_SEC_USER    role ON role.ID    = ur.ROLE_ID AND role.ROLE = 'R'
+-- role.LASTNAME carries the role display name ("Lab Tech", "Pathologist", etc.)
+```
+
+A typical user has ~2.5 grants (clinical-job + worklist + printer scopes mixed). For audit-grade reporting that needs a single per-user role label, pick the highest-priority clinical role via `MIN()` over a CASE rank (Pathologist > Cytotech > Manager > Lead > Lab Tech > Resident > Phlebotomist), with worklist/printer/admin role names mapped to NULL so they don't compete. No live query in this repo currently uses this pattern; build-out template lives in `setup/test_result_history_probe.sql` §51 (commented stub).
+
+`V_S_SEC_USER` profile takeaways (probed 2026-04-28):
+- `ROLE` enum is U (97.7%, user accounts) / R (2.3%, role definitions inline).
+- `ACTIVE='N'` (200 rows / 5.6%) is the only termination signal in active maintenance.
+- `SCC_USER='Y'` (7 rows total) is a rarity flag for super-accounts; useful for auditor-attention scoring.
+- `EMERGENCY_ACCESS`, `EMERGENCY_ROLE` are 0% populated — vestigial.
+- `FUTURE_ACTIVATE_DATE`, `FUTURE_DEACTIVATE_DATE`, `LAST_PWD_DATE` are NUMBER(10,0) with sentinel values (-1 / 0); max real values are from 2019-2020 (early SCC days), unmaintained since. Don't compare to SYSDATE; treat as effectively vestigial.
+- ID polarity is decorative: 99.8% of all rows have negative `ID` regardless of ROLE — not a useful discriminator.
 
 #### Corrected-result print-notice behavior (chemistry / general reports)
 

@@ -1121,3 +1121,455 @@ FROM recent_mod_tech rmt
 LEFT JOIN V_S_SEC_USER usr
        ON usr.TECH_ID = rmt.MOD_TECH
 ORDER BY rmt.amendment_rows DESC;
+
+
+/* ============================================================================
+   §§43-51 — SCC Security module deep-probe
+   Source: setup/dictionary_pdf_discrepancies.md §3 (V_S_SEC_USER outstanding
+           questions, plus V_S_SEC_USERROLES / V_S_SEC_CONTACT_INFO /
+           V_S_SEC_USER_GROUP / V_S_SEC_GROUP_ASSIGNMENT /
+           V_S_SEC_GROUP_ROLES_MAPPING that aren't characterized yet).
+
+   Use case: enrich corrected_results_summary.sql with role / group /
+   contact context so a downstream auditor can answer
+     - "Was the amender a Lab Tech, Pathologist, or Sysadmin?"
+     - "Which department/group does this amender belong to?"
+     - "Are there active+human amendments by accounts with elevated
+       (Emergency / Future-deactivated / SCC_USER) flags?"
+
+   Goals
+     1. Catalog every V_S_SEC_* view available
+     2. Profile V_S_SEC_USER's open enums + flags
+     3. Find the role-assignment view (V_S_SEC_USERROLES) and its role
+        master, and confirm the join keys
+     4. Find the group-membership chain (USER_GROUP, GROUP_ASSIGNMENT,
+        GROUP_ROLES_MAPPING) and confirm the join keys
+     5. Verify whether V_S_SEC_CONTACT_INFO duplicates V_S_SEC_USER's
+        name fields or carries different/extended demographics
+     6. Compose a forward-looking enrichment template for
+        corrected_results_summary.sql
+
+   Expectation: SCCODBC-prefixed names may be required in some clients.
+   The catalog query in §43 also surfaces the schema owner so subsequent
+   queries can be qualified if needed.
+   ============================================================================ */
+
+
+/* ----------------------------------------------------------------------------
+   43. Full V_S_SEC_* view catalog
+       Lists every Security-module view visible to the connected user
+       with column count and (rough) row count. Establishes the actual
+       view inventory in this deployment vs. the dict's reference list.
+   --------------------------------------------------------------------------- */
+SELECT
+    o.OWNER,
+    o.OBJECT_NAME,
+    o.OBJECT_TYPE,
+    (SELECT COUNT(*) FROM ALL_TAB_COLUMNS c
+       WHERE c.OWNER = o.OWNER
+         AND c.TABLE_NAME = o.OBJECT_NAME)               AS column_count,
+    o.CREATED,
+    o.LAST_DDL_TIME
+FROM ALL_OBJECTS o
+WHERE o.OBJECT_NAME LIKE 'V_S_SEC%'
+  AND o.OBJECT_TYPE IN ('VIEW','TABLE')
+ORDER BY o.OWNER, o.OBJECT_NAME;
+
+
+/* ----------------------------------------------------------------------------
+   44. V_S_SEC_USER population profile
+       Open questions from the discrepancies file:
+         - Full ROLE enum (only U/R observed in 5-row sample)
+         - Are negative ID values a sign-flipped sequence vs. a tier?
+         - SCC_USER flag — system vs. human accounts?
+         - EMERGENCY_ACCESS / EMERGENCY_ROLE / FUTURE_ACTIVATE_DATE /
+           FUTURE_DEACTIVATE_DATE — when populated?
+         - ACTIVE distribution
+   --------------------------------------------------------------------------- */
+-- 44a. ROLE enum
+SELECT ROLE, COUNT(*) AS rows_in_role
+FROM V_S_SEC_USER
+GROUP BY ROLE
+ORDER BY rows_in_role DESC;
+
+-- 44b. ACTIVE distribution
+SELECT ACTIVE, COUNT(*) AS rows_in_state
+FROM V_S_SEC_USER
+GROUP BY ACTIVE
+ORDER BY rows_in_state DESC;
+
+-- 44c. SCC_USER flag distribution (and its correlation with ROLE)
+SELECT SCC_USER, ROLE, COUNT(*) AS row_count
+FROM V_S_SEC_USER
+GROUP BY SCC_USER, ROLE
+ORDER BY row_count DESC;
+
+-- 44d. ID column polarity — does it really have negatives, and how dense?
+SELECT
+    SIGN(ID)                                             AS id_sign,
+    COUNT(*)                                             AS row_count,
+    MIN(ID)                                              AS min_id,
+    MAX(ID)                                              AS max_id
+FROM V_S_SEC_USER
+GROUP BY SIGN(ID)
+ORDER BY id_sign;
+
+-- 44e. ID polarity ↔ ROLE / SCC_USER correlation
+SELECT
+    CASE WHEN ID < 0 THEN 'negative'
+         WHEN ID = 0 THEN 'zero'
+         ELSE 'positive' END                             AS id_bucket,
+    ROLE,
+    SCC_USER,
+    COUNT(*)                                             AS row_count
+FROM V_S_SEC_USER
+GROUP BY
+    CASE WHEN ID < 0 THEN 'negative'
+         WHEN ID = 0 THEN 'zero'
+         ELSE 'positive' END,
+    ROLE,
+    SCC_USER
+ORDER BY row_count DESC;
+
+-- 44f. Optional flag fields — populated rate and overlap with ACTIVE
+SELECT
+    COUNT(*)                                             AS total_rows,
+    SUM(CASE WHEN EMERGENCY_ACCESS IS NOT NULL
+              AND EMERGENCY_ACCESS <> '' THEN 1 ELSE 0 END)
+                                                         AS emergency_access_set,
+    SUM(CASE WHEN EMERGENCY_ROLE IS NOT NULL
+              AND EMERGENCY_ROLE <> '' THEN 1 ELSE 0 END)
+                                                         AS emergency_role_set,
+    SUM(CASE WHEN FUTURE_ACTIVATE_DATE IS NOT NULL THEN 1 ELSE 0 END)
+                                                         AS future_activate_set,
+    SUM(CASE WHEN FUTURE_DEACTIVATE_DATE IS NOT NULL THEN 1 ELSE 0 END)
+                                                         AS future_deactivate_set,
+    SUM(CASE WHEN LAST_PWD_DATE IS NOT NULL THEN 1 ELSE 0 END)
+                                                         AS last_pwd_set
+FROM V_S_SEC_USER;
+
+-- 44g. Future-deactivated user spotlight (likely terminated employees still
+--      in the table). Useful for distinguishing "active human" amendments
+--      from "ghost-account" amendments.
+SELECT
+    TECH_ID,
+    USER_ID,
+    LASTNAME,
+    FIRSTNAME,
+    ACTIVE,
+    ROLE,
+    FUTURE_ACTIVATE_DATE,
+    FUTURE_DEACTIVATE_DATE,
+    LAST_PWD_DATE
+FROM V_S_SEC_USER
+WHERE FUTURE_DEACTIVATE_DATE IS NOT NULL
+   OR FUTURE_ACTIVATE_DATE   IS NOT NULL
+ORDER BY FUTURE_DEACTIVATE_DATE NULLS LAST;
+
+
+/* ----------------------------------------------------------------------------
+   45. V_S_SEC_USERROLES — role-assignment table
+       Discover the column shape, then locate the role-master view and
+       confirm the join keys. The dict suggests USER_ID + ROLE_ID columns
+       plus metadata.
+   --------------------------------------------------------------------------- */
+-- 45a. Schema discovery
+SELECT
+    COLUMN_ID,
+    COLUMN_NAME,
+    DATA_TYPE,
+    DATA_LENGTH,
+    NULLABLE
+FROM ALL_TAB_COLUMNS
+WHERE TABLE_NAME = 'V_S_SEC_USERROLES'
+ORDER BY COLUMN_ID;
+
+-- 45b. Sample rows
+SELECT *
+FROM V_S_SEC_USERROLES
+WHERE ROWNUM <= 10;
+
+-- 45c. Role distribution — group by the role column once 45a reveals its name.
+--      Stub query (replace ROLE_ID with the actual column from 45a):
+-- SELECT ROLE_ID, COUNT(*) AS user_count
+-- FROM V_S_SEC_USERROLES
+-- GROUP BY ROLE_ID
+-- ORDER BY user_count DESC;
+
+
+/* ----------------------------------------------------------------------------
+   46. Role master view discovery
+       UPDATED post-§43: there is no V_S_SEC_ROLE / V_S_SEC_ROLES master.
+       The §43 catalog returns these candidate masters (the views that
+       could hold role definitions referenced by USERROLES /
+       GROUP_ROLES_MAPPING / USERSITEROLE):
+         V_S_SEC_UPERMCLASS  (41 cols) — User Permission Class. Wide
+                                          column count suggests this is
+                                          the actual role/perm definition
+         V_S_SEC_RFUNCTION   (5 cols)  — possibly Role-Function lookup
+         V_S_SEC_CLASSITEM   (8 cols)  — items inside a permission class
+         V_S_SEC_RESTRICTCTG (7 cols)  — restriction category (less likely
+                                          to be the role master, but worth
+                                          probing for completeness)
+
+       Probe each schema to see which one carries the role/permission
+       NAME column referenced by the join tables.
+   --------------------------------------------------------------------------- */
+-- 46a. V_S_SEC_UPERMCLASS schema + sample
+SELECT COLUMN_ID, COLUMN_NAME, DATA_TYPE, DATA_LENGTH, NULLABLE
+FROM ALL_TAB_COLUMNS
+WHERE TABLE_NAME = 'V_S_SEC_UPERMCLASS'
+ORDER BY COLUMN_ID;
+
+SELECT *
+FROM V_S_SEC_UPERMCLASS
+WHERE ROWNUM <= 10;
+
+-- 46b. V_S_SEC_RFUNCTION schema + sample
+SELECT COLUMN_ID, COLUMN_NAME, DATA_TYPE, DATA_LENGTH, NULLABLE
+FROM ALL_TAB_COLUMNS
+WHERE TABLE_NAME = 'V_S_SEC_RFUNCTION'
+ORDER BY COLUMN_ID;
+
+SELECT *
+FROM V_S_SEC_RFUNCTION
+WHERE ROWNUM <= 10;
+
+-- 46c. V_S_SEC_CLASSITEM schema + sample
+SELECT COLUMN_ID, COLUMN_NAME, DATA_TYPE, DATA_LENGTH, NULLABLE
+FROM ALL_TAB_COLUMNS
+WHERE TABLE_NAME = 'V_S_SEC_CLASSITEM'
+ORDER BY COLUMN_ID;
+
+SELECT *
+FROM V_S_SEC_CLASSITEM
+WHERE ROWNUM <= 10;
+
+-- 46d. V_S_SEC_RESTRICTCTG schema + sample
+SELECT COLUMN_ID, COLUMN_NAME, DATA_TYPE, DATA_LENGTH, NULLABLE
+FROM ALL_TAB_COLUMNS
+WHERE TABLE_NAME = 'V_S_SEC_RESTRICTCTG'
+ORDER BY COLUMN_ID;
+
+SELECT *
+FROM V_S_SEC_RESTRICTCTG
+WHERE ROWNUM <= 10;
+
+
+/* ----------------------------------------------------------------------------
+   46e. V_S_SEC_USERSITEROLE — site-scoped role assignments
+       Temple has 6+ facilities (TUH, JNS, CHH, EPC, FCH, WFH) so role
+       assignments are almost certainly site-scoped. With 9 columns
+       this likely carries USER_FK + SITE_ID + ROLE_FK + activity
+       flags. May supersede V_S_SEC_USERROLES (4 cols) as the live
+       role-grant table in this deployment.
+   --------------------------------------------------------------------------- */
+SELECT COLUMN_ID, COLUMN_NAME, DATA_TYPE, DATA_LENGTH, NULLABLE
+FROM ALL_TAB_COLUMNS
+WHERE TABLE_NAME = 'V_S_SEC_USERSITEROLE'
+ORDER BY COLUMN_ID;
+
+SELECT *
+FROM V_S_SEC_USERSITEROLE
+WHERE ROWNUM <= 10;
+
+-- 46f. Coverage comparison: USERROLES vs USERSITEROLE
+SELECT
+    (SELECT COUNT(*) FROM V_S_SEC_USERROLES)     AS userroles_rows,
+    (SELECT COUNT(*) FROM V_S_SEC_USERSITEROLE)  AS usersiterole_rows,
+    (SELECT COUNT(*) FROM V_S_SEC_USER)          AS user_rows
+FROM dual;
+
+
+/* ----------------------------------------------------------------------------
+   46g. V_S_SEC_USER_EXT — extension columns beyond V_S_SEC_USER
+       47 cols (vs USER's 190) — likely an HR-side extension carrying
+       department, manager, hire date, employee number, etc. Worth
+       knowing whether this is where DEPARTMENT actually lives (vs.
+       being a column on V_S_SEC_USER as §37 implied).
+   --------------------------------------------------------------------------- */
+SELECT COLUMN_ID, COLUMN_NAME, DATA_TYPE, DATA_LENGTH, NULLABLE
+FROM ALL_TAB_COLUMNS
+WHERE TABLE_NAME = 'V_S_SEC_USER_EXT'
+ORDER BY COLUMN_ID;
+
+SELECT *
+FROM V_S_SEC_USER_EXT
+WHERE ROWNUM <= 5;
+
+
+/* ----------------------------------------------------------------------------
+   47. Role coverage for recent amenders
+       For every MOD_TECH on V_P_LAB_TEST_RESULT_HISTORY in the last 90
+       days, list the assigned roles. Joins through the chain:
+         MOD_TECH → V_S_SEC_USER.TECH_ID → V_S_SEC_USER.AA_ID
+                                       → V_S_SEC_USERROLES.<user_fk>
+                                       → role master.ROLE_NAME
+
+       This query is a STUB — fill in the FK column names from §45a/§46
+       output before running. Pattern preserved so it's easy to wire up.
+   --------------------------------------------------------------------------- */
+-- WITH recent_mod_tech AS (
+--     SELECT MOD_TECH, COUNT(*) AS amendment_rows
+--     FROM V_P_LAB_TEST_RESULT_HISTORY
+--     WHERE MOD_DT >= SYSDATE - 90
+--     GROUP BY MOD_TECH
+-- )
+-- SELECT
+--     rmt.MOD_TECH,
+--     rmt.amendment_rows,
+--     usr.LASTNAME,
+--     usr.FIRSTNAME,
+--     LISTAGG(role_name, '; ') WITHIN GROUP (ORDER BY role_name)
+--                                                 AS roles
+-- FROM recent_mod_tech                rmt
+-- LEFT JOIN V_S_SEC_USER             usr ON usr.TECH_ID = rmt.MOD_TECH
+-- LEFT JOIN V_S_SEC_USERROLES        ur  ON ur.<user_fk>  = usr.AA_ID
+-- LEFT JOIN <role_master_view>        rm  ON rm.<role_pk> = ur.<role_fk>
+-- GROUP BY rmt.MOD_TECH, rmt.amendment_rows, usr.LASTNAME, usr.FIRSTNAME
+-- ORDER BY rmt.amendment_rows DESC;
+
+
+/* ----------------------------------------------------------------------------
+   48. Group membership chain
+       Three views form the user→group→role chain per the dict:
+         V_S_SEC_USER_GROUP        — user-to-group membership (M:M)
+         V_S_SEC_GROUP_ASSIGNMENT  — group definition / parent grouping
+         V_S_SEC_GROUP_ROLES_MAPPING — role(s) granted to a group
+
+       Discover schema for each, then sample rows.
+   --------------------------------------------------------------------------- */
+-- 48a. V_S_SEC_USER_GROUP schema
+SELECT COLUMN_ID, COLUMN_NAME, DATA_TYPE, DATA_LENGTH, NULLABLE
+FROM ALL_TAB_COLUMNS
+WHERE TABLE_NAME = 'V_S_SEC_USER_GROUP'
+ORDER BY COLUMN_ID;
+
+-- 48b. V_S_SEC_USER_GROUP sample
+SELECT *
+FROM V_S_SEC_USER_GROUP
+WHERE ROWNUM <= 10;
+
+-- 48c. V_S_SEC_GROUP_ASSIGNMENT schema
+SELECT COLUMN_ID, COLUMN_NAME, DATA_TYPE, DATA_LENGTH, NULLABLE
+FROM ALL_TAB_COLUMNS
+WHERE TABLE_NAME = 'V_S_SEC_GROUP_ASSIGNMENT'
+ORDER BY COLUMN_ID;
+
+-- 48d. V_S_SEC_GROUP_ASSIGNMENT sample
+SELECT *
+FROM V_S_SEC_GROUP_ASSIGNMENT
+WHERE ROWNUM <= 10;
+
+-- 48e. V_S_SEC_GROUP_ROLES_MAPPING schema
+SELECT COLUMN_ID, COLUMN_NAME, DATA_TYPE, DATA_LENGTH, NULLABLE
+FROM ALL_TAB_COLUMNS
+WHERE TABLE_NAME = 'V_S_SEC_GROUP_ROLES_MAPPING'
+ORDER BY COLUMN_ID;
+
+-- 48f. V_S_SEC_GROUP_ROLES_MAPPING sample
+SELECT *
+FROM V_S_SEC_GROUP_ROLES_MAPPING
+WHERE ROWNUM <= 10;
+
+
+/* ----------------------------------------------------------------------------
+   49. Group-master discovery
+       Locate a top-level "group" view (just GROUP/GRP, no
+       ASSIGNMENT/ROLES suffix) that probably defines the group code +
+       name + description. Same schema-search pattern as §46.
+   --------------------------------------------------------------------------- */
+SELECT OWNER, OBJECT_NAME, OBJECT_TYPE
+FROM ALL_OBJECTS
+WHERE OBJECT_NAME LIKE 'V_S_SEC%GROUP%'
+  AND OBJECT_TYPE IN ('VIEW','TABLE')
+ORDER BY OBJECT_NAME;
+
+
+/* ----------------------------------------------------------------------------
+   50. V_S_SEC_CONTACT_INFO follow-through
+       The dict notes possible redundancy with V_S_SEC_USER's LASTNAME /
+       FIRSTNAME / MIDDLENAME. Compare the column sets and check whether
+       CONTACT_INFO carries different/extended fields (email, phone,
+       title, address, etc.) that we should surface alongside name.
+   --------------------------------------------------------------------------- */
+-- 50a. Schema (re-run for completeness)
+SELECT COLUMN_ID, COLUMN_NAME, DATA_TYPE, DATA_LENGTH, NULLABLE
+FROM ALL_TAB_COLUMNS
+WHERE TABLE_NAME = 'V_S_SEC_CONTACT_INFO'
+ORDER BY COLUMN_ID;
+
+-- 50b. Find the FK back to V_S_SEC_USER (likely USER_AA_ID, USER_ID, or
+--      similar — confirm with 50a output).
+-- 50c. Compare CONTACT_INFO populated rate to V_S_SEC_USER row count.
+SELECT
+    (SELECT COUNT(*) FROM V_S_SEC_USER)         AS user_rows,
+    (SELECT COUNT(*) FROM V_S_SEC_CONTACT_INFO) AS contact_rows;
+
+-- 50d. CONTACT_INFO row for our ground-truth tech (TKAZ).
+--      Stub — fill in the actual user-FK column from 50a:
+-- SELECT *
+-- FROM V_S_SEC_CONTACT_INFO ci
+-- JOIN V_S_SEC_USER         u  ON u.AA_ID = ci.<user_fk>
+-- WHERE u.TECH_ID = 'TKAZ';
+
+
+/* ----------------------------------------------------------------------------
+   51. Composed enrichment for corrected_results_summary.sql
+       Once §43-§50 reveal the exact join keys, this is the shape of
+       the proposed final enrichment to add to corrected_results_summary
+       (or break out into a corrected_results_audit_with_roles variant).
+
+       Resulting columns (added to the existing query):
+         CHANGED_BY_ROLES   — '; '-joined role names (e.g.,
+                              "Lab Tech; Pathologist")
+         CHANGED_BY_GROUPS  — '; '-joined group names (e.g.,
+                              "TUH Chemistry; All Sites")
+         CHANGED_BY_TITLE   — title or position from CONTACT_INFO if
+                              non-redundant with V_S_SEC_USER fields
+         IS_PRIVILEGED      — Y/N derived flag for SCC_USER='Y' OR
+                              EMERGENCY_ACCESS='Y' OR
+                              FUTURE_DEACTIVATE_DATE < SYSDATE — flags
+                              amendments that should get extra
+                              auditor scrutiny
+
+       This template is left as commented SQL until §43-§50 confirm
+       the column names. After confirmation, paste the column-aware
+       version into corrected_results_summary.sql or its audit sibling.
+   --------------------------------------------------------------------------- */
+-- WITH ... (existing hist_full CTE from corrected_results_summary.sql) ...
+-- ,
+-- amender_role AS (
+--     SELECT
+--         u.TECH_ID,
+--         LISTAGG(rm.<role_name>, '; ')
+--             WITHIN GROUP (ORDER BY rm.<role_name>)            AS roles
+--     FROM V_S_SEC_USER          u
+--     JOIN V_S_SEC_USERROLES     ur ON ur.<user_fk>  = u.AA_ID
+--     JOIN <role_master_view>     rm ON rm.<role_pk> = ur.<role_fk>
+--     GROUP BY u.TECH_ID
+-- ),
+-- amender_group AS (
+--     SELECT
+--         u.TECH_ID,
+--         LISTAGG(g.<group_name>, '; ')
+--             WITHIN GROUP (ORDER BY g.<group_name>)            AS groups
+--     FROM V_S_SEC_USER             u
+--     JOIN V_S_SEC_USER_GROUP       ug ON ug.<user_fk>  = u.AA_ID
+--     JOIN V_S_SEC_GROUP_ASSIGNMENT g  ON g.<group_pk>  = ug.<group_fk>
+--     GROUP BY u.TECH_ID
+-- )
+-- SELECT
+--     ...,                                               -- existing columns
+--     ar.roles                                           AS CHANGED_BY_ROLES,
+--     ag.groups                                          AS CHANGED_BY_GROUPS,
+--     CASE
+--         WHEN usr.SCC_USER = 'Y'                       THEN 'Y'
+--         WHEN usr.EMERGENCY_ACCESS = 'Y'               THEN 'Y'
+--         WHEN usr.FUTURE_DEACTIVATE_DATE < SYSDATE     THEN 'Y'
+--         ELSE 'N'
+--     END                                                AS IS_PRIVILEGED
+-- FROM ...
+-- LEFT JOIN amender_role  ar ON ar.TECH_ID = hf.MOD_TECH
+-- LEFT JOIN amender_group ag ON ag.TECH_ID = hf.MOD_TECH
+-- ...;
