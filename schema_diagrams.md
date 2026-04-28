@@ -123,10 +123,10 @@ erDiagram
 
 ```mermaid
 erDiagram
-    V_P_LAB_CANCELLATION }o--o| V_P_LAB_ORDERED_TEST : "test-level cancel"
-    V_P_LAB_CANCELLATION }o--o| V_P_LAB_TEST_RESULT : "result-level cancel"
-    V_P_LAB_CANCELLATION }o--o| V_P_LAB_SPECIMEN : "specimen-level cancel"
-    V_P_LAB_CANCELLATION }o--o| V_P_LAB_ORDERING_PATTERN : "standing-order cancel"
+    V_P_LAB_CANCELLATION }o--o{ V_P_LAB_ORDERED_TEST : "test-level cancel"
+    V_P_LAB_CANCELLATION }o--o{ V_P_LAB_TEST_RESULT : "result-level cancel"
+    V_P_LAB_CANCELLATION }o--o{ V_P_LAB_SPECIMEN : "specimen-level cancel"
+    V_P_LAB_CANCELLATION }o--o{ V_P_LAB_ORDERING_PATTERN : "standing-order cancel"
 
     V_P_LAB_CANCELLATION {
         NUMBER AA_ID PK
@@ -164,13 +164,13 @@ erDiagram
     V_P_ARE_VISIT ||--o{ V_P_ARE_INVOICE : "has invoices"
     V_P_ARE_VISIT ||--o{ V_P_ARE_TRANS : "has transactions"
     V_P_ARE_VISIT ||--o{ V_P_ARE_BILLERROR : "has errors"
-    V_P_ARE_ITEM }o--o| V_S_ARE_CCI : "system flagged CCI"
+    V_P_ARE_ITEM }o--o{ V_S_ARE_CCI : "system flagged CCI"
     V_S_ARE_CCI }o--|| V_S_ARE_CPTTABLE : "col1 col2 CPTs"
     V_P_ARE_ITEM }o--|| V_S_ARE_CPTTABLE : "ITCPTCD"
     V_P_ARE_ITEM }o--|| V_S_ARE_TEST : "ITTSTCODE"
     V_S_ARE_TEST ||--o{ V_S_ARE_BILLRULES : "billing rules"
-    V_S_ARE_BILLRULES }o--o| V_S_ARE_PAYOR : "payor specific"
-    V_S_ARE_BILLRULES }o--o| V_S_ARE_MODIFIER : "BRCCIMOD override"
+    V_S_ARE_BILLRULES }o--o{ V_S_ARE_PAYOR : "payor specific"
+    V_S_ARE_BILLRULES }o--o{ V_S_ARE_MODIFIER : "BRCCIMOD override"
     V_P_ARE_BILLERROR }o--|| V_S_ARE_ARERROR : "BERCODE = ERRCODE"
     V_P_ARE_TRANS }o--|| V_S_ARE_TRTYPE : "TRTTCODE"
 
