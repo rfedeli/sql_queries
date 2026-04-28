@@ -2006,20 +2006,84 @@ These hypotheses are NOT yet directly verified — flagged so future query autho
 
 ### V_P_BB_Patient — Blood bank patient demographics
 
-| Column | Type | Description |
-|--------|------|-------------|
-| AA_ID | NUMBER 14 | PK |
-| MRN | VARCHAR2 23 | Medical record number |
-| SSN | VARCHAR2 23 | Social security number |
-| LAST_NAME | VARCHAR2 35 | Last name |
-| FIRST_NAME | VARCHAR2 31 | First name |
-| ABO | VARCHAR2 2 | ABO blood type |
-| RH | CHAR 1 | Rh factor |
-| HISTORICAL_ABO | VARCHAR2 2 | Historical ABO |
-| HISTORICAL_RH | CHAR 1 | Historical Rh |
-| SEX | CHAR 1 | Sex |
-| RACE | VARCHAR2 40 | Race |
-| SITE | VARCHAR2 5 | Site |
+**36 columns total** (verified 2026-04-28 by `view_deep_probe.sql`). Wraps base table `BBANK_PATIENT` (which uses P-prefix column names: PLNAME, PFNAME, PDOB, PSDX, PTSTAMP, etc.). Volume: ~611K total patient rows; ~3K patients/30 days have records modified (`STAMP_DATE`-based — ~103 patient-record modifications/day).
+
+#### Identity & Names (always populated unless noted)
+
+| Column | Type | Notes |
+|--------|------|-------|
+| AA_ID | NUMBER 22 | PK (NOT NULL) |
+| MRN | VARCHAR2 23 | Medical record number — 100% populated, UNIQUE-indexed (BBANK_PMRNUM_UNIQ) |
+| SSN | VARCHAR2 23 | Social security number — 100% populated; indexed (BBANK_PSSNUM_INDEX) |
+| MPI | VARCHAR2 23 | Master Patient Index identifier — 100% populated |
+| LAST_NAME | VARCHAR2 35 | Last name — 100% populated; composite-indexed (BBANK_PNAME_INDEX) |
+| FIRST_NAME | VARCHAR2 31 | First name — 100% populated; composite-indexed |
+| MIDDLE_NAME | VARCHAR2 31 | **Middle initial, not full middle name.** Avg length 1.015 chars across the cohort — the column name is misleading. The system stores `'J'` not `'JAMES'` for ~98.5% of patients |
+| SOUNDEX | VARCHAR2 4 | Phonetic name code — 100% populated. **Heavily indexed** with 3 separate indexes (BBANK_PSDX_INDEX alone, BBANK_PSDXDOB_INDEX with DOB+TOB, BBANK_PSDXSSN_INDEX with SSN). BB does first-class phonetic patient lookup |
+| TITLE | VARCHAR2 11 | **VESTIGIAL — 0% populated** in 30-day sample |
+| SUFFIX | VARCHAR2 11 | Sparsely populated (0.06%); rarely used |
+
+#### Identifier-shape columns (mostly vestigial)
+
+| Column | Type | Notes |
+|--------|------|-------|
+| MOTHER_MRN | VARCHAR2 23 | **Sparsely real** — 92 distinct values across 3,084 rows (1 placeholder + ~91 real). Only ~3% of patients (newborns) have a real mother's MRN; the rest hold a 1-char placeholder. Filter `LENGTH(MOTHER_MRN) > 1` to find real linkages |
+| NEXT_MRN | VARCHAR2 23 | **VESTIGIAL** — 100% populated but with a single placeholder value (1 distinct, 1-char). Schema slot, not used for real next-MRN tracking |
+| AUXILIARY_MRN | VARCHAR2 23 | **VESTIGIAL** — same as NEXT_MRN: 1 distinct constant placeholder. Schema slot, not used |
+| PDF | VARCHAR2 23 | **VESTIGIAL — 0% populated** |
+| CHARTNO | VARCHAR2 32 | Sparsely populated (0.78%) — rare external chart-number cases |
+| EXTERNALID | VARCHAR2 32 | **VESTIGIAL — 0% populated** |
+| CLIENTID | VARCHAR2 15 | **VESTIGIAL — 0% populated** |
+| CASENO | VARCHAR2 5 | **VESTIGIAL — 0% populated** |
+| SITE | VARCHAR2 5 | **VESTIGIAL — 0% populated across all 611K rows** (verified, not just 30-day cohort). Prior dict claim that SITE was a real field was incorrect |
+
+#### Demographics
+
+| Column | Type | Notes |
+|--------|------|-------|
+| DOBDT | DATE | Date of birth (note: **`DOBDT` not `DOB_DT`** — different naming from V_P_LAB_PATIENT.DOB_DT) — 100% populated |
+| DOD | DATE | Date of death — **0% populated in 30-day sample**. Either rarely used in this deployment, or only populated for actually-deceased patients (none in recent cohort) |
+| SEX | CHAR 1 | 100% populated |
+| RACE | VARCHAR2 40 | ~99.7% populated |
+
+#### Blood-bank-specific (current and historical typing)
+
+| Column | Type | Notes |
+|--------|------|-------|
+| ABO | VARCHAR2 2 | Current ABO type — 95.7% populated |
+| RH | CHAR 1 | Current Rh factor — 95.7% (paired with ABO) |
+| HISTORICAL_ABO | VARCHAR2 2 | Historical ABO from prior encounter — 17% populated |
+| HISTORICAL_RH | CHAR 1 | Historical Rh — 17% populated (paired) |
+| HISTORICAL_ABORHDT | DATE | When historical type was recorded — 17% populated |
+
+#### Workflow / Audit
+
+| Column | Type | Notes |
+|--------|------|-------|
+| STAMP_DATE | DATE | Last-modified timestamp — 100% populated; **indexed** (BBANK_PTSTAMP_INDEX). **Use this as the windowing column** for any time-bound query against V_P_BB_Patient |
+| LAST_DISCHARGE_DATE | DATE | **VESTIGIAL — 0% populated** |
+| REPORT_FLAGS | NUMBER 22 | Bitmask, 100% populated; same recurring column across BB module |
+| FLAGS | NUMBER 22 | Generic flag bitmask, 100% populated |
+
+#### Internal SCC Option Keys (always populated, internal-use)
+
+`PMRNMO_OPTKEY`, `PMRNEXT_OPTKEY`, `PMRAUX_OPTKEY`, `PPATID_OPTKEY` — all NUMBER 22, 100% populated. Internal SCC sort/lookup keys (similar pattern to V_P_BB_BB_Order's OPTKEY columns); not query-useful for typical reports.
+
+**Notes:**
+
+- **Volume sizing:** ~611K total patients (cumulative, multi-year), ~103 patient-record modifications/day (`STAMP_DATE`-bounded). Much smaller than result tables.
+- **`STAMP_DATE` is the canonical windowing column** — indexed via `BBANK_PTSTAMP_INDEX`. Date predicates on `STAMP_DATE` use the index efficiently.
+- **`MIDDLE_NAME` stores middle INITIALS** despite the column name — avg length 1.015 chars. Don't expect full names.
+- **Of 10 identifier-shaped columns, 3 are real (MRN, SSN, MPI), 2 are sparsely real (MOTHER_MRN ~3% real, CHARTNO 0.78%), and 5 are entirely vestigial (NEXT_MRN/AUXILIARY_MRN as placeholder constants; PDF/EXTERNALID/CLIENTID/CASENO/TITLE/SITE all 0%).** The schema is much wider than the operationally-used field set.
+- **MOTHER_MRN newborn-detection filter:** `WHERE LENGTH(MOTHER_MRN) > 1` finds the ~3% of patients with real mother-MRN linkages (the rest carry a 1-char placeholder).
+- **Phonetic lookup is a first-class operation in BB.** Three indexes use SOUNDEX (alone, with DOB+TOB, with SSN). Patient-name search queries should consider Soundex-based fuzzy matching, not just `LIKE '%LASTNAME%'`.
+- **Base table `BBANK_PATIENT` uses different column names** than the view (P-prefix on most fields). Direct base-table queries need the underlying name (e.g., `PLNAME` not `LAST_NAME`).
+- **`PTOB` (time of birth) exists in the base table but is not exposed by V_P_BB_Patient.** Newborn time-of-birth precision (relevant for transfusion eligibility) is recorded in BBANK_PATIENT but not visible through the view.
+
+**Outstanding verification work:**
+
+- **`DOD` semantics**: 0% in 30-day cohort, but might be populated for deceased patients on full table. Probe `SELECT COUNT(DOD) FROM V_P_BB_Patient` (full table, no date filter) to confirm.
+- **Placeholder value for NEXT_MRN, AUXILIARY_MRN, MOTHER_MRN**: known to be 1 character but actual character not yet captured (would need a non-PHI-leaking sample query, e.g., `SELECT NEXT_MRN, COUNT(*) FROM V_P_BB_Patient GROUP BY NEXT_MRN HAVING COUNT(*) > 1000`)
 
 ### V_P_BB_Unit — Blood unit
 
