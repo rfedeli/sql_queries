@@ -1831,22 +1831,73 @@ Large table (100+ columns). Key columns grouped by category below.
 
 ### V_P_BB_Test — Blood bank test
 
+**24 columns total** — child entity of V_P_BB_BB_Order. Volume: ~308 tests/day, ~1.25 tests per BB order. Most BB orders generate exactly one test row; the >1.0 average is driven by the TS3-with-NCABO reflex pattern. No DATA_LENGTH=0 vestigial columns.
+
+#### Identity & Joins
+
 | Column | Type | Description |
 |--------|------|-------------|
-| AA_ID | NUMBER 14 | PK |
-| ORDERNO | VARCHAR2 11 | FK → V_P_BB_BB_Order.ORDERNO |
-| CODE | VARCHAR2 5 | Test code |
-| ORDEREDCODE | VARCHAR2 5 | Ordered code |
-| STATUS | CHAR 1 | Status |
-| TESTNO | NUMBER 5 | Sequential test number |
-| TEST_TYPE | CHAR 1 | Type |
-| PHYSICIAN | VARCHAR2 15 | Requesting physician |
-| WARD | VARCHAR2 15 | Ordering ward |
-| FINAL_INTERPRETATION | VARCHAR2 26 | Interpretation text |
-| RELEASING_TECH | VARCHAR2 16 | Releasing technologist |
-| REQUESTDT | DATE | Request date/time |
-| REQUESTEDDT | DATE | Requested date/time |
-| RELEASEDDT | DATE | Released date/time |
+| AA_ID | NUMBER 22 | PK (NOT NULL) |
+| ORD_TEST | NUMBER 22 | **Canonical FK → V_P_BB_BB_Order.AA_ID** (numeric). Use this for joins to BB_Order — more efficient than ORDERNO string match |
+| ORD_TEST_SORT | NUMBER 22 | Position within parent order (0-based; small integers observed: 0, 1, 7) |
+| ORDERNO | VARCHAR2 11 | Order number — denormalized string copy of `V_P_BB_BB_Order.ORDERNO` for convenience. Same value works for cross-module joins to V_P_LAB_ORDER.ID |
+| TESTNO | NUMBER 22 | Sequential test number within the order (1-based) |
+| HIS_ITEMNO | NUMBER 22 | HIS item identifier — observed `0` (default) on all sampled rows; likely populated only for HIS-feed-originated tests |
+| SELUN_TEST | NUMBER 22 | "Selected Unit" reference — blank for routine tests; populated when the test is tied to a specific unit (e.g., crossmatch) |
+| SELUN_TEST_SORT | NUMBER 22 | Position within selected-unit context |
+
+#### Test Identification
+
+| Column | Type | Description |
+|--------|------|-------------|
+| CODE | VARCHAR2 5 | Actual test code performed. Top values (30-day, 9,254 rows): `TS3` (48%, Type & Screen), `RETYP` (18%, Re-typing), `NCABO` (12%), `ABORH` (10%, ABO/Rh), then small-volume codes (XMAHG, ABID, XMIS, CORD/NCORD, DATP, antigen typings). Top 4 codes account for 88% of BB activity |
+| ORDEREDCODE | VARCHAR2 5 | Originally-ordered test code. **Pattern**: `ORDEREDCODE = CODE` when the test was directly ordered (e.g., ABORH, TS3); `ORDEREDCODE` is blank when the test is a system-generated component/reflex of a parent panel (e.g., NCABO is generated under ~24% of TS3 orders as an ABO-discrepancy reflex). Same pattern as `V_P_LAB_TEST_RESULT.GROUP_TEST_ID` vs `TEST_ID` |
+
+#### State
+
+| Column | Type | Description |
+|--------|------|-------------|
+| STATUS | CHAR 1 | Test status. Observed enum (30-day, 9,254 rows): blank (87%), `N` (13%, likely "New/unreleased"). Other values not seen — likely most tests just have NULL once finalized |
+| FLAG | CHAR 1 | Generic flag — observed blank in samples |
+| CANCELLED_STATUS | CHAR 1 | Cancellation status — sparsely populated |
+| TEST_TYPE | CHAR 1 | **VESTIGIAL — blank in all 9,254 rows over 30 days.** Documented schema slot, never populated. Same pattern as V_P_BB_BB_Order's ORDERTYPE/PATIENTTYPE |
+| REPORT_FLAGS | NUMBER 22 | Report flag bitmask — varies by test type (e.g., `575` for most, `63` for TS3) |
+
+#### Dates
+
+| Column | Type | Description |
+|--------|------|-------------|
+| REQUESTEDDT | DATE | When the test was requested (workhorse field) |
+| REQUESTDT | DATE | **Unused in 30-day samples — vestigial duplicate of REQUESTEDDT.** Don't filter on it |
+| RELEASEDDT | DATE | When the test was released — blank for in-flight tests |
+
+#### People
+
+| Column | Type | Description |
+|--------|------|-------------|
+| PHYSICIAN | VARCHAR2 15 | Requesting physician (FK by code → V_S_LAB_DOCTOR.ID) |
+| AUTHPHYSICIAN | VARCHAR2 15 | Authorizing physician — distinct from PHYSICIAN. Same pattern as V_P_LAB_ORDERED_TEST's SIGNING_DOCTOR_ID vs DOCTOR_ID |
+| RELEASING_TECH | VARCHAR2 16 | Tech who released the test result (FK by code → V_S_LAB_PHLEBOTOMIST.ID) |
+
+#### Other
+
+| Column | Type | Description |
+|--------|------|-------------|
+| FINAL_INTERPRETATION | VARCHAR2 26 | Free-text interpretation; blank for in-flight tests |
+| MEDICAL_SERVICE | VARCHAR2 5 | Medical service code. **Naming note**: this view uses `MEDICAL_SERVICE` (with underscore), but V_P_BB_BB_Order uses `MEDICALSERVICE` (no underscore). Cross-view joins must use the right column name per view |
+| WARD | VARCHAR2 15 | Ward code (FK by code → V_S_LAB_CLINIC.ID); same namespace as on BB_Order (TED, CICU, EHED, TUHPAT, etc.) |
+
+**Notes:**
+
+- **Volume**: ~308 BB tests/day; ~1.25 tests per BB order on average.
+- **`ORD_TEST` is the canonical FK to V_P_BB_BB_Order.AA_ID** (numeric). `ORDERNO` is a denormalized string copy. Both work for joining to BB_Order; `ORD_TEST` is more efficient.
+- **1,208 BB orders over 30 days have ZERO V_P_BB_Test rows** — these are mostly inventory orders (`ORDER_TYPE='I'` on V_P_BB_BB_Order) where ~70% generate no test rows. The remaining ~30% of inventory orders DO generate test rows (donor processing, QC).
+- **`TEST_TYPE` is fully vestigial** — never populated. Don't filter on it.
+- **`STATUS` only takes one non-blank value (`N`)** in observed data. Most tests are blank-status (probably "released/done"). Don't infer state from STATUS alone — use `RELEASEDDT IS NOT NULL` for "released" filtering.
+- **`REQUESTDT` is unused** — `REQUESTEDDT` is the workhorse date. Two date-named columns where only one carries data (same dual-column pattern as on V_P_BB_BB_Order).
+- **`ORDEREDCODE` blank ⇒ system-generated component**. NCABO (1,088 rows) appears under ~24% of TS3 orders (4,443 TS3s) as an ABO-discrepancy reflex — confirmed by the blank `ORDEREDCODE`.
+- **Top 4 test codes account for 88% of BB activity**: TS3 (Type & Screen), RETYP (Re-type), NCABO (component), ABORH (ABO/Rh).
+- **`MEDICAL_SERVICE` (underscore) vs V_P_BB_BB_Order.MEDICALSERVICE (no underscore)** — the same logical field has different physical names across BB views. Watch out on cross-view joins.
 
 ### V_P_BB_Patient — Blood bank patient demographics
 
