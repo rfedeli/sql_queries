@@ -784,3 +784,340 @@ SELECT
 FROM V_P_LAB_TEST_RESULT_HISTORY h
 WHERE h.ATEST_AA_ID = 690477560
 ORDER BY h.MOD_DT, h.AA_ID;
+
+
+/* ============================================================================
+   FOLLOW-UP: MOD_TECH person-vs-system classification (2026-04-28)
+
+   To distinguish manual-human amendments from system-process amendments
+   in the corrected-results report, we need to classify each MOD_TECH
+   value. Two questions for the data:
+
+     §31  Distinct MOD_TECH values + V_S_LAB_PHLEBOTOMIST join coverage
+          across recent amendments. Tells us how many amenders are real
+          people vs. system identities vs. unknown.
+
+     §32  Whether V_P_ARE_SCCSECUSER (SCC security user view from the
+          AR module) covers the gaps left by V_S_LAB_PHLEBOTOMIST.
+          Hypothesis: SCC's auth user table is more comprehensive than
+          the lab-phleb roster, which is mostly collector role codes.
+
+   Known system identities (from accumulated dictionary findings):
+     HIS, SCC, AUTOV, RBS — these should classify as 'System' even if
+     they happen to appear in V_S_LAB_PHLEBOTOMIST.
+
+   Known role codes in V_S_LAB_PHLEBOTOMIST (not real people):
+     PHLEB, NUR, PHY, PAT, UNK
+   ============================================================================ */
+
+
+/* ----------------------------------------------------------------------------
+   31. MOD_TECH distribution + phleb join coverage (90-day window)
+       Per distinct MOD_TECH: how many amendment rows, whether it joins
+       to V_S_LAB_PHLEBOTOMIST, and a coarse classification.
+
+       Output is sorted by row volume so the highest-volume amenders
+       surface first — useful for sanity-checking that the top amenders
+       are indeed real techs (or for spotting an unexpected system
+       identity dominating the data).
+   --------------------------------------------------------------------------- */
+WITH recent_mod_tech AS (
+    SELECT
+        MOD_TECH,
+        COUNT(*)                                       AS amendment_rows
+    FROM V_P_LAB_TEST_RESULT_HISTORY
+    WHERE MOD_DT >= SYSDATE - 90
+    GROUP BY MOD_TECH
+)
+SELECT
+    rmt.MOD_TECH,
+    rmt.amendment_rows,
+    phleb.LAST_NAME,
+    phleb.FIRST_NAME,
+    phleb.NURSE,
+    phleb.ACTIVE,
+    CASE
+        WHEN rmt.MOD_TECH IS NULL OR rmt.MOD_TECH = '' THEN 'Empty'
+        WHEN rmt.MOD_TECH IN ('HIS','SCC','AUTOV','RBS')
+            THEN 'System (known)'
+        WHEN rmt.MOD_TECH IN ('PHLEB','NUR','PHY','PAT','UNK')
+            THEN 'Role code'
+        WHEN phleb.ID IS NOT NULL
+         AND phleb.LAST_NAME IS NOT NULL
+         AND phleb.LAST_NAME <> ''
+            THEN 'Person'
+        WHEN phleb.ID IS NOT NULL
+            THEN 'Phleb match (no name)'
+        ELSE 'Unknown (no phleb match)'
+    END                                                AS classification
+FROM recent_mod_tech rmt
+LEFT JOIN V_S_LAB_PHLEBOTOMIST phleb
+       ON phleb.ID = rmt.MOD_TECH
+ORDER BY rmt.amendment_rows DESC;
+
+
+/* ----------------------------------------------------------------------------
+   32. V_P_ARE_SCCSECUSER coverage probe — does the AR security-user
+       view fill the V_S_LAB_PHLEBOTOMIST gap?
+
+       Ungrounded-discovery probe: I haven't seen the V_P_ARE_SCCSECUSER
+       column list yet. This SELECT * with ROWNUM <= 5 surfaces it.
+       If it has an ID/USERNAME and name fields, run it as the
+       follow-on join target.
+   --------------------------------------------------------------------------- */
+SELECT *
+FROM V_P_ARE_SCCSECUSER
+WHERE ROWNUM <= 5;
+
+
+/* ----------------------------------------------------------------------------
+   32b. (Run this after seeing 32's column list) — coverage join
+        Replace USERNAME_COL / LASTNAME_COL with the actual columns.
+        This template mirrors §31 but joins V_P_ARE_SCCSECUSER instead.
+   --------------------------------------------------------------------------- */
+-- WITH recent_mod_tech AS (
+--     SELECT
+--         MOD_TECH,
+--         COUNT(*)                                       AS amendment_rows
+--     FROM V_P_LAB_TEST_RESULT_HISTORY
+--     WHERE MOD_DT >= SYSDATE - 90
+--     GROUP BY MOD_TECH
+-- )
+-- SELECT
+--     rmt.MOD_TECH,
+--     rmt.amendment_rows,
+--     u.<LASTNAME_COL>                                   AS last_name,
+--     u.<FIRSTNAME_COL>                                  AS first_name,
+--     CASE
+--         WHEN u.<USERNAME_COL> IS NOT NULL THEN 'AR-user matched'
+--         ELSE 'No AR-user match'
+--     END                                                AS coverage
+-- FROM recent_mod_tech rmt
+-- LEFT JOIN V_P_ARE_SCCSECUSER u
+--        ON u.<USERNAME_COL> = rmt.MOD_TECH
+-- ORDER BY rmt.amendment_rows DESC;
+
+
+/* ----------------------------------------------------------------------------
+   33. Schema discovery — what owners can this connection see?
+       Cross-checks whether there's an SCC, SCCSEC, SOFTSEC, or similar
+       schema beyond LAB that might host the global user store.
+   --------------------------------------------------------------------------- */
+SELECT
+    OWNER,
+    COUNT(*)                                       AS object_count
+FROM ALL_OBJECTS
+WHERE OBJECT_TYPE IN ('TABLE', 'VIEW')
+GROUP BY OWNER
+ORDER BY object_count DESC;
+
+
+/* ----------------------------------------------------------------------------
+   34. User/security-like objects — name-pattern scan across ALL schemas
+       Catches anything with USER, SEC, AUTH, or LOGIN in the object name,
+       regardless of which schema owns it. Surfaces candidates we don't
+       know about yet.
+   --------------------------------------------------------------------------- */
+SELECT
+    OWNER,
+    OBJECT_TYPE,
+    OBJECT_NAME
+FROM ALL_OBJECTS
+WHERE OBJECT_TYPE IN ('TABLE', 'VIEW')
+  AND ( UPPER(OBJECT_NAME) LIKE '%USER%'
+     OR UPPER(OBJECT_NAME) LIKE '%SEC%'
+     OR UPPER(OBJECT_NAME) LIKE '%AUTH%'
+     OR UPPER(OBJECT_NAME) LIKE '%LOGIN%' )
+  AND OWNER NOT IN ('SYS', 'SYSTEM', 'XDB', 'CTXSYS', 'MDSYS',
+                    'OLAPSYS', 'ORDSYS', 'WMSYS', 'EXFSYS',
+                    'APEX_030200', 'APEX_040000', 'APEX_040200',
+                    'PUBLIC', 'OUTLN', 'DBSNMP', 'APPQOSSYS',
+                    'AUDSYS', 'GSMADMIN_INTERNAL', 'ORDDATA',
+                    'DVSYS', 'LBACSYS', 'OJVMSYS')
+ORDER BY OWNER, OBJECT_NAME;
+
+
+/* ----------------------------------------------------------------------------
+   35. Column-name scan — find tables/views with user-name-shaped fields
+       Catches user stores that don't have USER/SEC/AUTH in the object
+       name but DO have USERNAME / USER_ID / LASTNAME / FIRSTNAME columns.
+       Restricts to likely owners to keep result count manageable.
+   --------------------------------------------------------------------------- */
+SELECT
+    OWNER,
+    TABLE_NAME,
+    LISTAGG(COLUMN_NAME, ', ') WITHIN GROUP (ORDER BY COLUMN_NAME)
+                                                   AS user_shaped_cols
+FROM ALL_TAB_COLUMNS
+WHERE UPPER(COLUMN_NAME) IN (
+        'USERNAME', 'USER_NAME', 'USERID', 'USER_ID', 'USERCODE', 'USER_CODE',
+        'LOGIN', 'LOGIN_ID', 'LOGINID',
+        'EMP_ID', 'EMPLOYEE_ID', 'EMPLOYEEID',
+        'INITIALS', 'TECH_INITIALS'
+      )
+  AND OWNER NOT IN ('SYS', 'SYSTEM', 'XDB', 'CTXSYS', 'MDSYS',
+                    'OLAPSYS', 'ORDSYS', 'WMSYS', 'EXFSYS',
+                    'APEX_030200', 'APEX_040000', 'APEX_040200',
+                    'PUBLIC', 'OUTLN', 'DBSNMP', 'APPQOSSYS',
+                    'AUDSYS', 'GSMADMIN_INTERNAL', 'ORDDATA',
+                    'DVSYS', 'LBACSYS', 'OJVMSYS')
+GROUP BY OWNER, TABLE_NAME
+ORDER BY OWNER, TABLE_NAME;
+
+
+/* ----------------------------------------------------------------------------
+   36. Cross-check: does any candidate object actually contain MOD_TECH-
+       shaped values? Tests a specific known MOD_TECH (TKAZ from the
+       earlier GLU example) against every candidate table the previous
+       probes turned up.
+
+       Usage: after §34 / §35 surface candidates, fill in the table
+       names below and run. A table with TKAZ in its data is almost
+       certainly the user store.
+
+       (Filled with V_P_ARE_SCCSECUSER as a starting candidate;
+       add UNION ALLs for each new candidate from §34 / §35.)
+   --------------------------------------------------------------------------- */
+-- SELECT 'V_P_ARE_SCCSECUSER' AS source, COUNT(*) AS tkaz_match_rows
+-- FROM V_P_ARE_SCCSECUSER
+-- WHERE UPPER(<some_id_col>) = 'TKAZ'
+-- UNION ALL
+-- SELECT '<another candidate>' AS source, COUNT(*) AS tkaz_match_rows
+-- FROM <another candidate>
+-- WHERE UPPER(<some_id_col>) = 'TKAZ';
+
+
+/* ============================================================================
+   SCC SECURITY MODULE DISCOVERY (2026-04-28)
+
+   §34 surfaced the SCC Security module's view family in the SCCODBC schema:
+     V_S_SEC_USER             — primary user account view (likely)
+     V_S_SEC_USER_EXT         — user extension fields
+     V_S_SEC_CONTACT_INFO     — names / contact details (likely)
+     V_S_SEC_USERROLES        — user role assignments
+     V_S_SEC_USERSITEROLE     — user site/role mapping
+     V_S_SEC_USER_GROUP       — user-to-group assignments
+     V_S_SEC_GROUP_ASSIGNMENT — group assignments
+   plus ~25 more (printers, terminals, system params, etc.).
+
+   The SCCODBC schema is separate from LAB. Queries below try
+   unqualified names first; if Oracle returns ORA-00942 (table/view
+   does not exist), prefix with SCCODBC. (e.g. SCCODBC.V_S_SEC_USER).
+
+   Goal: identify which view holds the join key matching MOD_TECH
+   and which holds the human-readable name fields, then build the
+   right enrichment for corrected_results_summary.sql.
+   ============================================================================ */
+
+
+/* ----------------------------------------------------------------------------
+   37. V_S_SEC_USER column discovery
+   --------------------------------------------------------------------------- */
+SELECT *
+FROM V_S_SEC_USER
+WHERE ROWNUM <= 5;
+
+
+/* ----------------------------------------------------------------------------
+   38. V_S_SEC_USER_EXT column discovery
+   --------------------------------------------------------------------------- */
+SELECT *
+FROM V_S_SEC_USER_EXT
+WHERE ROWNUM <= 5;
+
+
+/* ----------------------------------------------------------------------------
+   39. V_S_SEC_CONTACT_INFO column discovery
+        Likely the source of LAST_NAME / FIRST_NAME for users.
+   --------------------------------------------------------------------------- */
+SELECT *
+FROM V_S_SEC_CONTACT_INFO
+WHERE ROWNUM <= 5;
+
+
+/* ----------------------------------------------------------------------------
+   40. Locate TKAZ across the three security views simultaneously
+       Uses the GLU/2026-04-24 example's MOD_TECH = 'TKAZ' as a known
+       lab-tech value. Whichever view returns a row tells us which is
+       the right join target for MOD_TECH.
+
+       This query uses dynamic column probing — searches every column
+       in each view for 'TKAZ'. If your client doesn't support multi-
+       column predicates well, run §37/§38/§39 first and grep the
+       output instead.
+   --------------------------------------------------------------------------- */
+-- One-liner version: count how many rows contain 'TKAZ' in any varchar field.
+-- Run §37/§38/§39 first to identify the actual ID/USERNAME column,
+-- then write a targeted probe like:
+--
+--   SELECT 'V_S_SEC_USER' AS view_name, <id_col>, <name_col>
+--   FROM V_S_SEC_USER
+--   WHERE UPPER(<id_col>) = 'TKAZ';
+--
+-- (Filling this in once §37 reveals the column names.)
+
+
+/* ----------------------------------------------------------------------------
+   41. Ground-truth: confirm TKAZ joins to V_S_SEC_USER via TECH_ID
+        From §37 we know the join key is V_S_SEC_USER.TECH_ID
+        (uppercase 3–5 char tech initials). The GLU/2026-04-24 example's
+        MOD_TECH was 'TKAZ' (Tom Kaznowski). This grounds the join.
+   --------------------------------------------------------------------------- */
+SELECT
+    AA_ID,
+    USER_ID,
+    TECH_ID,
+    LASTNAME,
+    FIRSTNAME,
+    MIDDLENAME,
+    ACTIVE,
+    ROLE,
+    DEPARTMENT
+FROM V_S_SEC_USER
+WHERE TECH_ID = 'TKAZ';
+
+
+/* ----------------------------------------------------------------------------
+   42. MOD_TECH × V_S_SEC_USER coverage (90-day window)
+       Per distinct MOD_TECH on V_P_LAB_TEST_RESULT_HISTORY, how many
+       amendments + whether it joins to V_S_SEC_USER.
+
+       Replaces §31 (V_S_LAB_PHLEBOTOMIST coverage) — that was the
+       wrong target. V_S_SEC_USER is the SCC Security module's user
+       store and should cover real lab techs.
+
+       Output sorted by volume so high-frequency amenders surface first.
+   --------------------------------------------------------------------------- */
+WITH recent_mod_tech AS (
+    SELECT
+        MOD_TECH,
+        COUNT(*)                                       AS amendment_rows
+    FROM V_P_LAB_TEST_RESULT_HISTORY
+    WHERE MOD_DT >= SYSDATE - 90
+    GROUP BY MOD_TECH
+)
+SELECT
+    rmt.MOD_TECH,
+    rmt.amendment_rows,
+    usr.LASTNAME,
+    usr.FIRSTNAME,
+    usr.ROLE,
+    usr.ACTIVE,
+    usr.DEPARTMENT,
+    CASE
+        WHEN rmt.MOD_TECH IS NULL OR rmt.MOD_TECH = ''
+            THEN 'Empty'
+        WHEN rmt.MOD_TECH IN ('HIS','SCC','AUTOV','RBS')
+            THEN 'System'
+        WHEN usr.TECH_ID IS NOT NULL
+         AND usr.LASTNAME IS NOT NULL
+         AND usr.LASTNAME <> ''
+            THEN 'Person'
+        WHEN usr.TECH_ID IS NOT NULL
+            THEN 'User (no name)'
+        ELSE 'Unknown'
+    END                                                AS classification
+FROM recent_mod_tech rmt
+LEFT JOIN V_S_SEC_USER usr
+       ON usr.TECH_ID = rmt.MOD_TECH
+ORDER BY rmt.amendment_rows DESC;

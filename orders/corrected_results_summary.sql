@@ -13,6 +13,17 @@ where the value actually moved, returns:
   RESULT_TO           value after this amendment
   CHANGED_BY          tech who made the amendment (MOD_TECH)
   CHANGED_AT          when the amendment happened (MOD_DT)
+  CHANGED_BY_NAME     full name of the amender from V_S_SEC_USER
+                      (LASTNAME, FIRSTNAME). NULL when MOD_TECH is a
+                      system identity (HIS/SCC/AUTOV/RBS) or doesn't
+                      match any registered SCC Security user.
+  CHANGE_SOURCE       'Person'  — MOD_TECH joined to a real V_S_SEC_USER
+                                  account with a name (manual edit)
+                      'System'  — MOD_TECH is a known automation ID
+                                  (HIS/SCC/AUTOV/RBS)
+                      'Unknown' — MOD_TECH didn't join and isn't on
+                                  the known-system list (probe
+                                  setup/test_result_history_probe.sql §42)
   RMOD_COMMENT        reproduction of the SCC client's Result Comments
                       → History tab line tagged "RMOD" — the same
                       text the user sees in the UI. Format:
@@ -94,6 +105,23 @@ SELECT
     COALESCE(hf.next_prev_result, tr.RESULT)        AS RESULT_TO,
     hf.MOD_TECH                                     AS CHANGED_BY,
     hf.MOD_DT                                       AS CHANGED_AT,
+    TRIM(usr.LASTNAME
+         || CASE WHEN usr.FIRSTNAME IS NOT NULL AND usr.FIRSTNAME <> ''
+                 THEN ', ' || usr.FIRSTNAME ELSE '' END)
+                                                    AS CHANGED_BY_NAME,
+    CASE
+        WHEN hf.MOD_TECH IS NULL OR hf.MOD_TECH = ''
+            THEN 'Empty'
+        WHEN hf.MOD_TECH IN ('HIS','SCC','AUTOV','RBS')
+            THEN 'System'
+        WHEN usr.TECH_ID IS NOT NULL
+         AND usr.LASTNAME IS NOT NULL
+         AND usr.LASTNAME <> ''
+            THEN 'Person'
+        WHEN usr.TECH_ID IS NOT NULL
+            THEN 'User (no name)'
+        ELSE 'Unknown'
+    END                                             AS CHANGE_SOURCE,
     'Previous value was ' || hf.PREV_RESULT
         || CASE WHEN hf.prev_units IS NOT NULL AND hf.prev_units <> ''
                 THEN ' ' || hf.prev_units ELSE '' END
@@ -106,6 +134,7 @@ INNER JOIN V_P_LAB_TEST_RESULT tr ON tr.AA_ID = hf.ATEST_AA_ID
 INNER JOIN V_P_LAB_ORDER o        ON o.AA_ID  = tr.ORDER_AA_ID
 INNER JOIN V_P_LAB_STAY st        ON st.AA_ID = o.STAY_AA_ID
 INNER JOIN V_P_LAB_PATIENT pt     ON pt.AA_ID = st.PATIENT_AA_ID
+LEFT JOIN  V_S_SEC_USER usr       ON usr.TECH_ID = hf.MOD_TECH
 WHERE hf.MOD_DT >= TO_DATE(:START_DATE, 'YYYYMMDD')
   AND hf.MOD_DT <  TO_DATE(:END_DATE,   'YYYYMMDD') + 1
   AND o.COLLECT_CENTER_ID LIKE :DEPOT

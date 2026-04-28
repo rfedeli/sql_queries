@@ -1314,17 +1314,19 @@ Implications:
 
 | Column | Type | Description |
 |--------|------|-------------|
-| ID | VARCHAR2 16 | Collector code (matches V_P_LAB_TUBEINFO.COLLECTION_PHLEB, V_P_LAB_TUBE.RECEIPT_TECH, etc.) |
-| LAST_NAME | VARCHAR2 51 | Last name |
-| FIRST_NAME | VARCHAR2 51 | First name |
-| MIDDLE_NAME | VARCHAR2 31 | Middle name |
-| STREETI | VARCHAR2 | Street address |
-| CITY | VARCHAR2 | City |
-| STATE | VARCHAR2 | State |
-| ZIP | VARCHAR2 | ZIP |
-| PHONE | VARCHAR2 | Phone |
-| SSN | VARCHAR2 | SSN |
-| NOTES | VARCHAR2 | Notes |
+| AA_ID | NUMBER | PK (base column GC_PHLEB.GC_PHLEB_RECID) |
+| ID | VARCHAR2 16 | Collector code (matches V_P_LAB_TUBEINFO.COLLECTION_PHLEB, V_P_LAB_TUBE.RECEIPT_TECH, etc.). Base column: GC_PHNUM |
+| LAST_NAME | VARCHAR2 50 | Last name (PDF spec; if production schema has 51 see `setup/dictionary_pdf_discrepancies.md` §1a) |
+| FIRST_NAME | VARCHAR2 80 | First name (PDF spec — was previously documented as 51; verify in production) |
+| MIDDLE_NAME | VARCHAR2 27 | Middle name |
+| STREET1 | VARCHAR2 64 | Street address (base column GC_PHADR1) |
+| STREET2 | VARCHAR2 64 | Street address line 2 (base column GC_PHADR2) |
+| CITY | VARCHAR2 40 | City |
+| STATE | VARCHAR2 3 | State |
+| ZIP | VARCHAR2 11 | ZIP |
+| PHONE | VARCHAR2 20 | Phone |
+| SSN | VARCHAR2 15 | SSN (not on the screen per PDF) |
+| NOTES | VARCHAR2 51 | Notes/comments |
 | NURSE | VARCHAR2 1 | Nurse flag (Y/N) — identifies nursing-staff collectors vs. phlebotomists/other |
 | ACTIVE | VARCHAR2 1 | Active flag (Y/N) |
 
@@ -1377,7 +1379,10 @@ Implications:
 | MD | VARCHAR2 15 | MD code |
 | DEPOT | NUMBER 0 | Depot |
 
-**Note:** This view does NOT have an ACTIVE or TYPE column. SENDING_FACITILY is intentionally misspelled in the database (should be SENDING_FACILITY).
+**Notes:**
+- This view does NOT have an ACTIVE or TYPE column. `SENDING_FACITILY` is intentionally misspelled in the database (should be SENDING_FACILITY).
+- **`DESCRIPTION` is a virtual column** — per SCC PDF dictionary, it is the concatenation `LOTEXT1 || LOTEXT2 || LOTEXT3 || LOTEXT4` (each VARCHAR2 59). The PDF also documents `DESCRIPTION_LINE1` through `DESCRIPTION_LINE4` as separate accessor columns for the four underlying lines. To read individual lines without parsing 236 chars, use the `DESCRIPTION_LINE*` columns.
+- **`STREET2` is "not on the screen"** in the SCC client per the PDF — the column exists but isn't surfaced in the standard location-setup UI.
 
 ### V_S_LAB_TEST_GROUP — Group/orderable test setup
 
@@ -1447,6 +1452,7 @@ Implications:
 - Departments are per-facility — e.g., TCHEM (TUH Chemistry), JCHEM (JNS Chemistry), FCHEM (FC Chemistry).
 - `LOCATION_ID` identifies the facility: TUH, JNS, FC, EPC, CH, WFH, NE, ADL, TQUC, TQUH, TVIA, THST, etc.
 - Section names in NAME: CHEMISTRY, COAGULATION, HEMATOLOGY, POINT OF CARE, REFERENCE LAB, BLOOD BANK, URINALYSIS, MICROBIOLOGY, IMMUNOLOGY, MOLECULAR, PATHOLOGY, CYTOLOGY, VIROLOGY, HLA, BILLING, PHLEBOTOMY, RESEARCH.
+- **`DESCRIPTION` is a virtual column** — per SCC PDF dictionary, it is the concatenation `DPTEXT1 || DPTEXT2 || DPTEXT3 || DPTEXT4` (each VARCHAR2 59). The PDF also documents `DESCRIPTION_LINE1` through `DESCRIPTION_LINE4` as separate accessor columns for the four underlying lines. Use `DESCRIPTION_LINE*` to read individual lines without parsing the 236-char concatenated string.
 
 ### V_S_LAB_WORKSTATION — Workstation definition
 
@@ -1884,7 +1890,7 @@ Large table (100+ columns). Key columns grouped by category below.
 | EXP_DATE / EXP_DT | NUMBER / DATE | Expiration date (numeric pair + DATE). ~23% of rows are past their EXP_DT. ACTIVE and EXP_DT are independent dimensions (some active rows have past expiration dates and vice versa). Base-table column is `MESEXDT` |
 | NEW_LINE | VARCHAR2 1 | Newline indicator. The only column with any nulls (~16% blank); rest are 100% populated |
 | CATEGORY | VARCHAR2 | Category enum — see distribution table below |
-| DISCARD_CONTAINER | VARCHAR2 | Discard-container marker (100% populated, semantics unverified) |
+| DISCARD_CONTAINER | NUMBER 5 | Discard-container flag (100% populated; semantics unverified — PDF spec says NUMBER, prior CLAUDE.md guess was VARCHAR2; see `setup/dictionary_pdf_discrepancies.md` §1b) |
 
 #### CATEGORY enum (verified, 18 values)
 
@@ -2908,6 +2914,258 @@ Single-letter columns (S, T, U, V, W, X, Y, Z, A1–Z1, D–P, F_0–F_9, ZZ1, Z
 - Many analyzers share a middleware connection (e.g., multiple Beckman AU/DxC/Access instruments route through a single Remisol interface like TREM, JREM, EREM, FREM, WFREM).
 - Reference lab interfaces (Quest, Viracor, HistoTrac) use `LISTN_NAME = 'genref'` and `DIR_NAME` like `I/QUEST`, `I/TVCOR`, `I/HIST`.
 - `ORD_WORKSTATION_ID` and `RES_WORKSTATION_ID` link to V_S_LAB_WORKSTATION for mapping instruments to SoftLab workstations.
+
+---
+
+## PDF Capsule Reference — Views in Dictionary, Not Yet Probed
+
+One- to three-line capsules for views documented in the SCC PDF dictionaries (SoftLab SA Base 4.5.5.51.7 / SoftMic) but not given full detail above. Promote a capsule to a full section the first time it appears in a query. PK noted; key columns are documented in the PDF and should be re-probed against production before authoring queries (deployment may have schema drift).
+
+### SoftLab — Setup (V_S_LAB_*)
+
+| View | PK / Key columns | Purpose |
+|------|------------------|---------|
+| V_S_LAB_TEST_RANGE | AA_ID; TEST_AA_ID FK → V_S_LAB_TEST.AA_ID; SEX, AGE_FROM/AGE_TO, CLINIC_ID, NORMAL/PANIC/ABSURD/DELTA bounds | Sex/age/clinic-specific result reference ranges. Multiple rows per test for population stratification |
+| V_S_LAB_TEST_VALUE | AA_ID; TEST_AA_ID; VALUE, VALUE_TYPE, REFLEX_TEST_ID | Predefined result values (e.g., 'POS','NEG','PRELIM') and reflex-test triggers. `REFLEX_TEST_ID` is the source of automatic reflex orders |
+| V_S_LAB_TEST_FORMULARY | AA_ID; TEST_AA_ID; REF_LAB_ID, MNEMONIC, HOSP_CHARGE | Per-reference-lab test mnemonics and hospital charge amounts. Used when a test maps to multiple ref labs |
+| V_S_LAB_TEST_HIS | AA_ID; TEST_ID, HIS_TEST_ID | HIS↔Lab test code mapping. Critical when interpreting Epic-originated orders |
+| V_S_LAB_TEST_DIAGNOSIS | AA_ID; TEST_ID, DIAGNOSIS_ID, ALLOWED_FLAG | Test ↔ diagnosis allowed/not-allowed pairs. Drives medical-necessity edits |
+| V_S_LAB_TEST_LEGALSOURCE | AA_ID; TEST_AA_ID; SOURCE_CODE | Micro test legal-source definitions (which sources a test can be ordered against) |
+| V_S_LAB_TEST_METHODOLOGY | AA_ID; TEST_AA_ID; METHODOLOGY | Methodology assignment per test |
+| V_S_LAB_TEST_MICLINKTESTS | AA_ID; TEST_AA_ID; LINKED_TEST_ID | Micro test cascade — tests automatically linked when this micro test is ordered |
+| V_S_LAB_TEST_MICPOSRESULT | AA_ID; TEST_AA_ID; POSITIVE_RESULT | Micro positive/negative result values (drives "POS"/"NEG" interpretation) |
+| V_S_LAB_TEST_MICSRCCAT | AA_ID; TEST_AA_ID; SOURCE_CATEGORY | Micro source-category restrictions |
+| V_S_LAB_TEST_MICSTAIN | AA_ID; TEST_AA_ID; STAIN_ID, ISOLATE_CHECK | Stain-isolate cross-check rules |
+| V_S_LAB_TEST_SHIPPING_TEMP | AA_ID; TEST_AA_ID; TEMPERATURE | Test-level shipping temperature requirements |
+| V_S_LAB_TEST_TEMPERATURE | AA_ID; TEST_AA_ID; TEMPERATURE | Specimen handling temperature setup |
+| V_S_LAB_TEST_SYNONYM | AA_ID; TEST_AA_ID; SYNONYM | Test name synonyms (alternate display labels) |
+| V_S_LAB_INSURANCE | AA_ID; ID, NAME | Lab-side insurance setup. **AR is the source of truth** — many columns DEPRECATED here per PDF; cross-reference V_S_ARE_INSUR/V_S_ARE_PAYOR |
+| V_S_LAB_DIAGNOSIS | AA_ID; ID, NAME, CODING_STANDARD | Diagnosis (ICD-9/ICD-10) setup |
+| V_S_LAB_MEDICAL_SERVICE | AA_ID; ID, NAME | Medical service codes (FK target for V_P_LAB_ORDER.MEDICAL_SERVICE_ID) |
+| V_S_LAB_KEYPAD | AA_ID; ID, NAME | Keypad code definitions (used for canned result entry) |
+| V_S_LAB_DOCTORS_GROUP | AA_ID; ID, NAME | Doctor group codes — used by RBS for group-scoped rules |
+| V_S_LAB_DOCTOR_ASSOCIATE | AA_ID; DOCTOR_ID, CLINIC_ID | Doctor↔clinic associations (many-to-many) |
+| V_S_LAB_DOCTOR_HIS | AA_ID; DOCTOR_ID, HIS_ACCOUNT, DEPOT | Doctor HIS-account depot mapping |
+| V_S_LAB_CLINIC_ASSOCIATE | AA_ID; CLINIC_ID, DOCTOR_ID | Clinic associated doctors |
+| V_S_LAB_HIS_ACCOUNT | AA_ID; ID, DEPOT | HIS account → depot setup |
+| V_S_LAB_HIS_MAPPING | AA_ID; HIS_CODE, LAB_CODE | HIS↔Lab code translation |
+| V_S_LAB_RBSRRULE | AA_ID; ID, FOLDER, ACTIVE | Rules-Based System rule definitions (legacy view; modern RBS detail in RV_RBS_*) |
+| V_S_LAB_RV_RBS_RULE | AA_ID; FOLDER_AA_ID, NAME, ACTIVE | Receipt&Verify RBS rule (modern). Joins to RV_RBS_COND, RV_RBS_ACTION |
+| V_S_LAB_RV_RBS_COND | AA_ID; RULE_AA_ID, FIELD, OPERATOR, VALUE | RBS rule condition lines |
+| V_S_LAB_RV_RBS_COND_ATTR | AA_ID; COND_AA_ID, ATTR_NAME, ATTR_VALUE | RBS condition extended attributes |
+| V_S_LAB_RV_RBS_ACTION | AA_ID; RULE_AA_ID, ACTION_TYPE, TARGET | RBS rule action — what fires when conditions match |
+| V_S_LAB_RV_RBS_ACTION_PARAM | AA_ID; ACTION_AA_ID, PARAM_NAME, PARAM_VALUE | RBS action parameters |
+| V_S_LAB_RV_RBS_FOLDER | AA_ID; ID, NAME, PARENT_ID | RBS rule folder hierarchy |
+| V_S_LAB_RV_WLIST | AA_ID; ID, NAME, ACTIVE | Triage worklist template |
+| V_S_LAB_RV_WLIST_ITEM | AA_ID; WLIST_AA_ID, TEST_ID, SORT | Worklist item membership |
+| V_S_LAB_TEMPLATE | AA_ID; ID, NAME, GROUP_ID | Worksheet/QC template definitions |
+| V_S_LAB_TEMPLATE_ITEM | AA_ID; TEMPLATE_AA_ID; TEST_ID, WORKSTATION_ID, SORT | Items (test/workstation pairs) in template |
+| V_S_LAB_TEMPLATE_GROUP | AA_ID; ID, NAME | Template grouping for organization |
+| V_S_LAB_TEMPLATE_QC | AA_ID; TEMPLATE_AA_ID, QC_PARAMS | QC specimen parameters in template |
+| V_S_LAB_TEMPLATE_ST | AA_ID; TEMPLATE_AA_ID, ST_PARAMS | Standard-curve specimen parameters in template |
+| V_S_LAB_LBL_SETUP | AA_ID; ID, NAME, FORMAT | Label printing setup |
+| V_S_LAB_REPORT_SETUP | AA_ID; ID, NAME, FORMAT_TYPE | Query and report format definitions |
+| V_S_LAB_REPORT_SETUP_ITEM | AA_ID; REPORT_AA_ID, ITEM_ID, SORT | Report items/columns |
+| V_S_LAB_REPORT_DESTINATION | AA_ID; WARD_ID/DOCTOR_ID, DEST_TYPE | Where reports route by ward or doctor |
+| V_S_LAB_REGION | AA_ID; ID, NAME | Multisite region definitions |
+| V_S_LAB_REDIRECTION | AA_ID; FROM_WORKSTATION, TO_WORKSTATION | Workstation redirection (test rerouting) |
+| V_S_LAB_PHLEB_ROUTE | AA_ID; ID, NAME, PHLEB_ID | Phlebotomy route setup |
+| V_S_LAB_PHLEB_CLASS_ROUTE | AA_ID; ID, NAME | Class-of-routes setup |
+| V_S_LAB_PHLEB_CLASR_ITEM | AA_ID; CLASS_AA_ID, ROUTE_ID | Routes in class |
+| V_S_LAB_ORDPATTERN | AA_ID; ID, NAME, INTERVAL | Recurring/standing order pattern |
+| V_S_LAB_ENVIRONMENT | AA_ID; ID, NAME | Testing environment definitions |
+| V_S_LAB_ENVSELECTION | AA_ID; TEST_ID, ENVIRONMENT | Environment selection per test |
+| V_S_LAB_INSTRUMENT_GROUP | AA_ID; ID, NAME | Instrument group setup |
+| V_S_LAB_LOCATION_ACCOUNT | AA_ID; LOCATION_ID, ACCOUNT | Reference lab location account |
+| V_S_LAB_METHODOLOGY | AA_ID; ID, NAME | Methodology codes (lookup) |
+| V_S_LAB_PRECISION_RULE | AA_ID; TEST_ID, RANGE_LOW/HIGH, PRECISION | Multi-level precision rules |
+| V_S_LAB_PRIOR_REASON | AA_ID; ID, REASON | Priority reason codes |
+| V_S_LAB_SPECQUAL | AA_ID; ID, NAME | Specimen quality codes (HEMOLYZED, CLOTTED, etc.) |
+| V_S_LAB_LOINC | AA_ID; LOINC, NAME, COMPONENT, METHOD | LOINC code reference |
+| V_S_LAB_SNOMEDCT | AA_ID; CODE, DESCRIPTION | SNOMED CT code reference (compatibility) |
+| V_S_LAB_SNOMEDREL | AA_ID; PARENT_CODE, CHILD_CODE | SNOMED CT hierarchical relationships |
+| V_S_LAB_SETUP_TRNSL | AA_ID; FROM_CODE, TO_CODE, SETUP_TYPE | Insurance/code translation setup |
+| V_S_LAB_CODES_TRANSLATION | AA_ID; FROM, TO, TYPE | Generic code translation setup |
+| V_S_LAB_CASES | AA_ID; ID, ESO_PARAMS | Cases (ESO — Electronic Surgical Orders) setup |
+| V_S_LAB_CLEANUPRULES | AA_ID; ID, RULE | Database cleanup/archival rules |
+| V_S_LAB_DEFINITIONS | AA_ID; KEY, VALUE, CATEGORY | Settings/definitions key-value store |
+| V_S_LAB_DEF_INSTR_COLL | AA_ID; ID, INSTRUCTION | Collection instruction definitions |
+| V_S_LAB_DEF_INSTR_PROC | AA_ID; ID, PROCEDURE | Collection procedure definitions |
+| V_S_LAB_DEF_MESS_CATEGORY | AA_ID; CATEGORY, DESCRIPTION | Canned message category lookup |
+| V_S_LAB_DEF_PATIENT_TYPE | AA_ID; ID, NAME | Patient-type code definitions |
+| V_S_LAB_DEF_SPECIMEN_TYPES | AA_ID; ID, NAME | Specimen-type code definitions |
+| V_S_LAB_TAGSETUP | AA_ID; ID, TAG_TYPE | Tag setup |
+| V_S_LAB_TAT_LIMIT | (deprecated per PDF) | TAT limit definitions — deprecated; use V_S_LAB_TEST.TAT_STAT/URGENT/TIMED |
+| V_S_LAB_MISC_TAGS | AA_ID; ENTITY_ID, TAG | Tags for miscellaneous records |
+| V_S_LAB_TEMPERATURE | AA_ID; ID, TEMPERATURE | Specimen temperature codes |
+| V_S_LAB_TRFILTER_ITEM | AA_ID; FILTER_ID, ITEM_TYPE, ITEM_VALUE | Location/department/workstation filter codes |
+| V_S_LAB_UNIVERSALID | AA_ID; ID, NAMESPACE | Universal ID namespace setup |
+| V_S_LAB_WORKSTATION_GROUP | AA_ID; ID, NAME | Workstation group setup |
+| V_S_LAB_ONLY_DEPARTMENT | (subset view) | Subset of V_S_LAB_DEPARTMENT — use main view |
+| V_S_LAB_ONLY_LOCATION | (subset view) | Subset of V_S_LAB_LOCATION — use main view |
+| V_S_LAB_ONLY_SPECIMEN | (subset view) | Subset of V_S_LAB_SPECIMEN — use main view |
+| V_S_LAB_ONLY_WORKSTATION | (subset view) | Subset of V_S_LAB_WORKSTATION — use main view |
+| V_S_LAB_SALESPERSON | AA_ID; ID, NAME, COMMISSION_PCT | Salesperson info (outreach) |
+| V_S_LAB_STUDY | AA_ID; ID, NAME, ACTIVE | Research study setup |
+| V_S_LAB_SPECIMEN_ATTS | AA_ID; SPECIMEN_AA_ID, ATTR_NAME, ATTR_VALUE | Additional specimen attributes (key-value extension) |
+| V_S_RAW_VALUES | AA_ID; UNIT_ID, VALUE | Cytology/Pathology unit values |
+
+### SoftMic — Patient/Transactional (V_P_MIC_*) and BCC (V_P_BCC_*)
+
+| View | PK / Key columns | Purpose |
+|------|------------------|---------|
+| V_P_MIC_ACTIVE_ORDER | AA_ID; ACTIVE_AA_ID FK → V_P_LAB_ORDER.AA_ID; ORDER_STATUS, TEST_STATUS (computed CASE) | Micro orders with computed status. Many DEPRECATED date/flag columns; use the canonical _DT/_FLAG columns. **Cross-module link: ACTIVE_AA_ID = V_P_LAB_ORDER.AA_ID** |
+| V_P_MIC_TEST | AA_ID; ORDER_AA_ID FK; TEST_ID, TEST_NAME, RESULT, STATUS | Micro test row (counterpart to V_P_LAB_TEST_RESULT for micro flow) |
+| V_P_MIC_ISOLATE | AA_ID; TEST_AA_ID FK; ORGANISM_ID, ISOLATE_NUMBER | Isolate per test — links to V_S_MIC_ORGANISM |
+| V_P_MIC_SENSI | AA_ID; ISOLATE_AA_ID FK; DRUG_ID, MIC_VALUE, INTERPRETATION (S/I/R) | Drug sensitivity results per isolate |
+| V_P_MIC_PATHREVIEW | AA_ID; TEST_AA_ID; PATHOLOGIST_ID, TECH_ID, REVIEW_DT | Pathology review of micro tests. **PATHOLOGIST_ID ≠ TECH_ID** — pathologist signs, tech reviews |
+| V_P_MIC_MEDIA | AA_ID; TEST_AA_ID; MEDIA_ID, GROWTH_FLAG | Media plates per test |
+| V_P_MIC_COMM | AA_ID; ORDER_AA_ID; COMMENT_TEXT | Micro order-level comments |
+| V_P_MIC_ORDER_COMM | AA_ID; ORDER_AA_ID; COMMENT_TEXT, COMMENT_TYPE | Order-comment with categorization |
+| V_P_MIC_TESTCOMM | AA_ID; TEST_AA_ID; COMMENT_TEXT | Test-level comments |
+| V_P_MIC_ISOCOMM | AA_ID; ISOLATE_AA_ID; COMMENT_TEXT | Isolate-level comments |
+| V_P_MIC_MEDIACOMM | AA_ID; MEDIA_AA_ID; COMMENT_TEXT | Media-plate comments |
+| V_P_MIC_COMMON_MEDIACOMM | AA_ID; COMMENT_TEXT | Reusable common-media-comment library |
+| V_P_MIC_THERAPYCOMM | AA_ID; SENSI_AA_ID; COMMENT_TEXT | Drug therapy comments per sensitivity |
+| V_P_MIC_TEST_REPORTTO | AA_ID; TEST_AA_ID, DOCTOR_ID | Report-to doctor list per micro test |
+| V_P_TMP_EPI_ORDERS | (temp table) | Temporary working set for BCC/epidemiology reports |
+| V_P_BCC_FREQUENCY | AA_ID; WARD_ID, ORG_ID, DATE_RANGE | Blood Culture Contamination frequencies by ward |
+| V_P_BCC_GROUP_VIOLATIONS | AA_ID; GROUP_ID, VIOLATION_TYPE | BCC group violation report |
+| V_P_BCC_ORGANISM_VIOLATIONS | AA_ID; ORGANISM_ID, VIOLATION_TYPE | BCC organism violation report |
+
+### SoftMic — Setup (V_S_MIC_*)
+
+| View | PK / Key columns | Purpose |
+|------|------------------|---------|
+| V_S_MIC_DRUG | AA_ID; ID, NAME, CLASS | Antimicrobial drug definitions |
+| V_S_MIC_DRUG_CLASS | AA_ID; DRUG_ID, CLASS_ID | Drug↔class membership (many-to-many) |
+| V_S_MIC_PANEL | AA_ID; ID, NAME, ACTIVE | Sensitivity panel definitions (e.g., MicroScan, Vitek) |
+| V_S_MIC_PANEL_ITEM_VALUES | AA_ID; PANEL_AA_ID, DRUG_ID, BREAKPOINTS | Panel components and MIC breakpoints |
+| V_S_MIC_MEDIA | AA_ID; ID, NAME, MEDIA_TYPE | Media (agar plate) definitions |
+| V_S_MIC_SOURCE | AA_ID; ID, NAME, CATEGORY | Specimen source definitions |
+| V_S_MIC_SPECIMEN_PROCEDURE | AA_ID; ID, PROCEDURE_TEXT | Standard collection procedures per specimen type |
+| V_S_MIC_PROCESS | AA_ID; ID, NAME | Micro process definitions |
+| V_S_MIC_RULE | AA_ID; ID, ACTIVE | Micro rule (modern view) |
+| V_S_MIC_RULES | AA_ID; ID, ACTIVE | Micro rule (legacy view — same purpose as V_S_MIC_RULE) |
+| V_S_MIC_ACTION | AA_ID; RULE_AA_ID, ACTION_TYPE | Actions fired by rule |
+| V_S_MIC_ASSOCIATED_RULE | AA_ID; RULE_AA_ID, ORG_ID, DRUG_ID | Rule↔organism/drug link table |
+| V_S_MIC_ALTERNATIVE_ORGANISMS | AA_ID; PRIMARY_ORG_ID, ALT_ORG_ID | Organism alias/alternate codes |
+| V_S_MIC_ORGANISM_CLASS | AA_ID; ORG_ID, CLASS_ID | Organism↔class membership |
+| V_S_MIC_EPIREP | AA_ID; ID, NAME | Epidemiology report definition |
+| V_S_MIC_EPI_OPTIONS | AA_ID; EPIREP_AA_ID, OPTION_KEY, OPTION_VALUE | Epi report runtime options |
+| V_S_MIC_EPI_VALUES | AA_ID; EPIREP_AA_ID, VALUE_TYPE, VALUE | Epi report value-set |
+| V_S_MIC_WORKLIST | AA_ID; ID, NAME, ACTIVE | Worklist template |
+| V_S_MIC_WORKLIST_AUTORES | AA_ID; WORKLIST_AA_ID, TEST_ID, AUTORESULT | Worklist auto-result rules |
+| V_S_MIC_WORKLIST_DEPART | AA_ID; WORKLIST_AA_ID, DEPARTMENT_ID | Departments scoped to worklist |
+| V_S_MIC_WORKLIST_DEP_QUERY | AA_ID; WORKLIST_AA_ID, QUERY_PARAMS | Department-query parameters |
+| V_S_MIC_WORKLIST_MEDIA | AA_ID; WORKLIST_AA_ID, MEDIA_ID | Media on worklist |
+| V_S_MIC_WORKLIST_PANEL | AA_ID; WORKLIST_AA_ID, PANEL_ID | Sensitivity panels on worklist |
+| V_S_MIC_WORKLIST_SPEC_PROC | AA_ID; WORKLIST_AA_ID, SPEC_PROCEDURE | Specimen procedures on worklist |
+| V_S_MIC_WORKLIST_SRC_CAT | AA_ID; WORKLIST_AA_ID, SOURCE_CATEGORY | Source categories on worklist |
+| V_S_MIC_WORKLIST_STUDY_TST | AA_ID; WORKLIST_AA_ID, STUDY_ID, TEST_ID | Study tests on worklist |
+| V_S_MIC_WORKLIST_TEST | AA_ID; WORKLIST_AA_ID, TEST_ID | Tests on worklist |
+| V_S_MIC_WORKLIST_WORKST | AA_ID; WORKLIST_AA_ID, WORKSTATION_ID | Workstations on worklist |
+
+### SoftBank — Patient/Transactional (V_P_BB_*) — capsules for views not yet detailed
+
+Volume context: Patient and Order detail are documented above (V_P_BB_BB_Order, V_P_BB_Patient, V_P_BB_Test, V_P_BB_Result). Capsules below cover the remaining BB-Patient module views.
+
+| View | PK / Key columns | Purpose |
+|------|------------------|---------|
+| V_P_BB_Action | AA_ID; ORDERNO/PATIENT_AA_ID; CODE, AMOUNT, TECH | Transfusion / crossmatch / disposition actions on units (already partially detailed above) |
+| V_P_BB_BB_Exception | AA_ID; ORDERNO; EXCEPTION_CODE, EXCEPTION_TEXT | BB exceptions (workflow holds, special-case flags) |
+| V_P_BB_Blood_Specimen | AA_ID; ORDERNO; SPECIMEN_ID, COLLECTED_DT | Blood specimens for BB orders |
+| V_P_BB_Charge | AA_ID; ORDERNO; CHARGE_CODE, AMOUNT | Charges per BB order/transaction |
+| V_P_BB_Comment_Line | AA_ID; OWNER_AA_ID, OWNER_TYPE, LINE_NUMBER, TEXT | Free-text comment lines (multi-line, attached to various BB entities) |
+| V_P_BB_Emergency_Unit | AA_ID; UNIT_AA_ID; ISSUE_DT, ISSUE_TYPE | Emergency-issue unit records (uncrossmatched issues) |
+| V_P_BB_Nurse_Observation | AA_ID; PATIENT_AA_ID; OBSERVATION_DT, NURSE_ID, OBS_TEXT | Nurse-recorded observations during transfusion |
+| V_P_BB_Patient_Anti | AA_ID; PATIENT_AA_ID; ANTIBODY_ID/ANTIGEN_ID, STATUS | Patient antibody and antigen records |
+| V_P_BB_Patient_Comment | AA_ID; PATIENT_AA_ID, STAY_AA_ID; COMMENT_TEXT | Patient/stay-level comments |
+| V_P_BB_Patient_Extended | AA_ID; PATIENT_AA_ID; extended demographics | Extended demographic data not on V_P_BB_Patient |
+| V_P_BB_Patient_HLA | AA_ID; PATIENT_AA_ID; HLA_TYPE | Patient HLA typing |
+| V_P_BB_Patient_Message | AA_ID; PATIENT_AA_ID; MESSAGE_CODE, ACTIVE | Special patient flags (e.g., transfusion restrictions) |
+| V_P_BB_Patient_Patient | AA_ID; PATIENT1_AA_ID, PATIENT2_AA_ID, RELATIONSHIP | Patient↔patient links (newborn↔mother, etc.) |
+| V_P_BB_Patient_Stay | AA_ID; PATIENT_AA_ID; STAY_DATA | BB-side patient stay record (separate from V_P_LAB_STAY) |
+| V_P_BB_Patient_Transfusion | AA_ID; PATIENT_AA_ID; UNIT_AA_ID, TRANSFUSION_DT | Transfusion records |
+| V_P_BB_Patient_Unit | AA_ID; PATIENT_AA_ID, UNIT_AA_ID | Patient↔unit assignment links |
+| V_P_BB_Patient_Vital | AA_ID; PATIENT_AA_ID; VITAL_DT, BP/TEMP/PULSE | Patient vital signs (during transfusion) |
+| V_P_BB_Product_Order | AA_ID; ORDERNO; PRODUCT_CODE, QUANTITY | Product orders (component requests) |
+| V_P_BB_QC_Rack | AA_ID; ID, RACK_DT, TECH | QC rack instances |
+| V_P_BB_QC_Reagent | AA_ID; ID, REAGENT_NAME, LOT, EXPIRY | QC reagents |
+| V_P_BB_QC_Reagent_In_Rack | AA_ID; RACK_AA_ID, REAGENT_AA_ID, POSITION | QC reagent rack positions |
+| V_P_BB_QC_Result | AA_ID; QC_TEST_AA_ID; RESULT_VALUE, INTERP | QC test results |
+| V_P_BB_QC_Test | AA_ID; RACK_AA_ID; TEST_CODE, RESULT_DT | QC test instance |
+| V_P_BB_RX_Product | AA_ID; PRODUCT_CODE, LOT, QUANTITY | Supplies / RX products |
+| V_P_BB_Remote_Unit_History | AA_ID; UNIT_AA_ID; LOCATION, EVENT_DT | Remote unit history (off-site movement) |
+| V_P_BB_ReportDestination | AA_ID; ORDERNO; DESTINATION, DEST_TYPE | Report destinations per BB order |
+| V_P_BB_Selected_Unit | AA_ID; PATIENT_AA_ID, UNIT_AA_ID; STATUS | Units selected for patient (pre-issue) |
+| V_P_BB_Selun_Instruction | AA_ID; SELUN_AA_ID; INSTRUCTION | Instructions on selected units |
+| V_P_BB_Transfusion_Vital | AA_ID; TRANSFUSION_AA_ID, VITAL_AA_ID | Transfusion↔vital cross-reference |
+| V_P_BB_UnitExtData | AA_ID; UNIT_AA_ID; KEY, VALUE | Unit extended data (key-value) |
+| V_P_BB_Unit_Anti | AA_ID; UNIT_AA_ID; ANTIBODY/ANTIGEN/ATTRIBUTE | Unit antibodies, antigens, attributes |
+| V_P_BB_Unit_Instruction | AA_ID; UNIT_AA_ID; INSTRUCTION | Per-unit handling instructions |
+| V_P_BB_Unit_Lbl | AA_ID; UNIT_AA_ID; LABEL_TYPE, LABEL_DT | Unit label history |
+| V_P_BB_Unit_Segment | AA_ID; UNIT_AA_ID; SEGMENT_NUMBER | Unit segment tracking (for retesting) |
+| V_P_BB_Unit_Segment_Link | AA_ID; SEGMENT1_AA_ID, SEGMENT2_AA_ID | Segment↔segment link |
+| V_P_BB_Unit_Unit | AA_ID; UNIT1_AA_ID, UNIT2_AA_ID, RELATIONSHIP | Unit↔unit relationships (split, pooled, derived) |
+| V_P_BB_Vital_Ref | AA_ID; VITAL_AA_ID, REF_TYPE | Vital signs reference links |
+| V_P_BB_Worksheet | AA_ID; ID, NAME, RUN_DT | BB worksheet instances |
+| V_P_BB_Worksheet_Element | AA_ID; WORKSHEET_AA_ID; ELEMENT_TYPE, VALUE | Worksheet elements |
+| V_P_BB_X_BBWild | AA_ID; KEY, VALUE | General-purpose record (catch-all key-value) |
+| V_P_BB_X_Counter | (internal) | Internal sequence counters |
+| V_P_BB_X_Version | (internal) | Version control metadata |
+
+### SoftBank — Setup (V_S_BB_Y_*)
+
+The SoftBank setup namespace uses a `Y_` infix (likely the original SCC SoftBank module prefix preserved through the rename).
+
+| View | PK / Key columns | Purpose |
+|------|------------------|---------|
+| V_S_BB_Y_Action | AA_ID; ID, NAME | Action codes (transfusion, crossmatch, dispose) |
+| V_S_BB_Y_Action_ExtId | AA_ID; ACTION_AA_ID, EXTERNAL_ID | Supplier-external action IDs |
+| V_S_BB_Y_Antibody | AA_ID; ID, NAME, SPECIFICITY | Antibody master list |
+| V_S_BB_Y_Antigen | AA_ID; ID, NAME, SYSTEM | Antigen master list (with blood-group system) |
+| V_S_BB_Y_Bl_Prd_Attribute | AA_ID; PRODUCT_ID, ATTRIBUTE | Blood product attributes |
+| V_S_BB_Y_Blood_Alt_ABORh | AA_ID; PRODUCT_ID, ALT_ABORH | Alternative ABO/Rh permitted for product |
+| V_S_BB_Y_Blood_ExtId | AA_ID; PRODUCT_ID, EXTERNAL_ID | Product↔supplier external code |
+| V_S_BB_Y_Blood_Neo_ABORh | AA_ID; PRODUCT_ID, NEO_ABORH | Neonatal ABO/Rh override |
+| V_S_BB_Y_Blood_Product | AA_ID; ID, NAME, ISBT_CODE | Blood product master list |
+| V_S_BB_Y_Blood_SpcMsg | AA_ID; PRODUCT_ID, MESSAGE | Special messages by product |
+| V_S_BB_Y_Canned_Message | AA_ID; ID, TEXT | BB canned messages (separate from SoftLab V_S_LAB_CANNED_MESSAGE) |
+| V_S_BB_Y_Charge | AA_ID; ID, AMOUNT | BB charge codes |
+| V_S_BB_Y_Coll_Facility_Prefix | AA_ID; PREFIX, FACILITY | ISBT collection facility prefixes |
+| V_S_BB_Y_Collection_Facility | AA_ID; ID, NAME | Collection facility master |
+| V_S_BB_Y_Diagnosis | AA_ID; ID, NAME, DRG_CODE | DRG / diagnosis setup for BB |
+| V_S_BB_Y_Diagnosis_ICD | AA_ID; DIAG_AA_ID, ICD_CODE | ICD↔BB diagnosis mapping |
+| V_S_BB_Y_Discard | AA_ID; ID, REASON | Discard reasons |
+| V_S_BB_Y_Exception | AA_ID; ID, NAME | Exception codes (workflow holds) |
+| V_S_BB_Y_Instruction | AA_ID; ID, TEXT | Instruction templates |
+| V_S_BB_Y_Instruction_SpcMsg | AA_ID; INSTRUCTION_AA_ID, MESSAGE | Special messages for instructions |
+| V_S_BB_Y_Interpretation | AA_ID; ID, NAME, INTERP_TEXT | Test interpretation codes |
+| V_S_BB_Y_Medical_Services | AA_ID; ID, NAME | Medical service codes (BB-side) |
+| V_S_BB_Y_Nurse | AA_ID; ID, NAME | Nurse master list |
+| V_S_BB_Y_Patient_Type | AA_ID; ID, NAME | Patient-type codes (BB-side) |
+| V_S_BB_Y_Phlebotomist | AA_ID; ID, NAME | Phlebotomist master list (BB-side) |
+| V_S_BB_Y_Physician | AA_ID; ID, NAME | Physician master list (BB-side) |
+| V_S_BB_Y_QC_Reagent | AA_ID; ID, NAME, EXPIRY | QC reagent master list |
+| V_S_BB_Y_QC_Reagent_Site | AA_ID; REAGENT_AA_ID, SITE_ID | QC reagent↔site links |
+| V_S_BB_Y_Special_Message | AA_ID; ID, MESSAGE | General patient-flag messages |
+| V_S_BB_Y_Stock_Level | AA_ID; PRODUCT_ID, MIN_LEVEL, MAX_LEVEL | Inventory stock-level thresholds |
+| V_S_BB_Y_Supplier | AA_ID; ID, NAME, FACILITY | Blood supplier master |
+| V_S_BB_Y_Surgical_Procedure | AA_ID; ID, NAME, BLOOD_USAGE | Surgical procedure codes (with blood usage estimates) |
+| V_S_BB_Y_Test | AA_ID; ID, NAME, ACTIVE | BB test codes |
+| V_S_BB_Y_Test_Logic_Table | AA_ID; TEST_AA_ID, LOGIC_RULE | Test logic / interpretation tables |
+| V_S_BB_Y_Test_Phase | AA_ID; TEST_AA_ID, PHASE_ID, INTERP | Test phase interpretation |
+| V_S_BB_Y_Test_Phase_Group | AA_ID; PHASE_AA_ID, GROUP_VALUE | Phase value groups |
+| V_S_BB_Y_Transfusion_Reaction | AA_ID; ID, NAME, SEVERITY | Transfusion reaction code list |
+| V_S_BB_Y_Unit_Attribute | AA_ID; ID, NAME | Unit attribute codes |
+| V_S_BB_Y_Unit_Condition | AA_ID; ID, NAME | Unit condition codes |
+| V_S_BB_Y_Unit_Location | AA_ID; ID, NAME | Unit storage location codes |
+| V_S_BB_Y_Ward | AA_ID; ID, NAME | Ward master list (BB-side) |
+| V_S_BB_Y_Worksheet | AA_ID; ID, NAME, TEMPLATE | Worksheet templates |
+| V_S_BB_Y_Workstation | AA_ID; ID, NAME | Workstation master list (BB-side) |
+| V_S_BB_QC_Template | AA_ID; ID, NAME | QC test template |
+| V_S_BB_QC_Template_Element | AA_ID; TEMPLATE_AA_ID, ELEMENT | QC template elements |
 
 ---
 
