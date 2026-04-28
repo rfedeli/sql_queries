@@ -168,24 +168,118 @@ Every monetary column in SoftAR (`ITPRICE`, `ITBAL`, `INCHARGE`, `INDUEAMT`, `VT
 
 ### V_P_LAB_STAY — Stay/Visit information
 
+**51 columns total** — grouped here by category. Volume: ~6.5K rows/day, ~1.46 stays per patient over 7 days. **Critical caveat: `ADMISSION_DT` can be in the FUTURE** for pre-scheduled outpatient visits — see notes below.
+
+#### Identity & Patient
+
 | Column | Type | Description |
 |--------|------|-------------|
-| AA_ID | NUMBER 14 | PK |
-| PATIENT_AA_ID | NUMBER 14 | FK → V_P_LAB_PATIENT.AA_ID |
-| BILLING | VARCHAR2 23 | Epic CSN (Contact Serial Number) — encounter identifier from Epic HIS |
-| CLINIC_ID | VARCHAR2 15 | FK (by code) → V_S_LAB_CLINIC.ID |
-| ROOM | VARCHAR2 7 | Room |
-| BED | VARCHAR2 3 | Bed |
-| DOCTOR_ID | VARCHAR2 15 | Admitting doctor (FK by code → V_S_LAB_DOCTOR.ID) |
-| ADMISSION_DT | DATE | Admission date/time |
-| DISCHARGE_DT | DATE | Discharge date/time |
-| DIAGNOSIS1_ID | VARCHAR2 11 | Primary diagnosis code |
+| AA_ID | NUMBER 22 | PK (NOT NULL) |
+| PATIENT_AA_ID | NUMBER 22 | FK → V_P_LAB_PATIENT.AA_ID |
+| MRNNUM | VARCHAR2 23 | MRN — denormalized from V_P_LAB_PATIENT.ID. Lets queries skip the PATIENT join when only MRN is needed |
+| BILLING | VARCHAR2 23 | **Epic CSN** (Contact Serial Number) — encounter identifier from Epic HIS. **Unique per stay, never null** (validated 7-day sample: 45,975 stays / 45,975 distinct CSNs / 0 nulls). Safe to use as a unique join key |
+| MOTHER_BILLING | VARCHAR2 23 | Mother's CSN for newborn stays. **Caveat: mostly defaults to the stay's own BILLING for non-newborn stays** — only carries a *different* CSN on actual newborn-mother linkages |
+| EXTERNAL_VISIT_NUM | VARCHAR2 32 | External-system visit identifier (often blank for outpatient) |
+| HIS_VISIT_NUM | VARCHAR2 32 | HIS visit identifier (often blank for outpatient; populated for inpatient HIS-fed stays) |
+
+#### Dates
+
+| Column | Type | Description |
+|--------|------|-------------|
+| ADMISSION_DT | DATE | Admission timestamp (canonical). **Can be in the FUTURE** for pre-scheduled outpatient visits posted from Epic in advance — observed up to 5 months ahead. Naive date-range filters silently include scheduled-but-not-yet-occurred stays |
+| ADMISSION_DATE | DATE | Duplicate of ADMISSION_DT in samples (both DATE type, both midnight on outpatient stays). Pick `ADMISSION_DT` |
+| ADMISSION_TIME | NUMBER 22 | Time component as integer; `0` for stays without specific admit time |
+| DISCHARGE_DT | DATE | Discharge timestamp. NULL when discharge hasn't happened |
+| DISCHARGE_DATE | DATE | Duplicate of DISCHARGE_DT |
+| DISCHARGE_TIME | NUMBER 22 | Time component; `-1` is the "not set" sentinel |
+
+#### Doctors
+
+| Column | Type | Description |
+|--------|------|-------------|
+| DOCTOR_ID | VARCHAR2 15 | Primary doctor (FK by code → V_S_LAB_DOCTOR.ID). **Workhorse field** — populated on outpatient stays where ADMITTING/CONSULTING are blank |
+| ADMITTING_DOCTOR_ID | VARCHAR2 15 | Admitting doctor (FK by code → V_S_LAB_DOCTOR.ID). Populated for inpatient stays |
+| CONSULTING_DOCTOR_ID | VARCHAR2 15 | Consulting doctor (FK by code → V_S_LAB_DOCTOR.ID). Populated for inpatient stays |
+
+#### Location
+
+| Column | Type | Description |
+|--------|------|-------------|
+| CLINIC_ID | VARCHAR2 15 | Ordering ward/clinic (FK by code → V_S_LAB_CLINIC.ID) |
+| ROOM | VARCHAR2 7 | Room (inpatient only — empty for outpatient stays) |
+| BED | VARCHAR2 3 | Bed (inpatient only) |
+
+#### Patient Type & Classification
+
+| Column | Type | Description |
+|--------|------|-------------|
+| HIS_PATIENT_TYPE | VARCHAR2 1 | HIS patient type. Observed enum (7-day sample): `O` (Outpatient, 87%), `E` (Emergency, 7%), `I` (Inpatient, 2.6%), blank (2.7%), `N` (Newborn/Non-patient, 0.5%), `H` (rare, 0.007%) |
+| HIS_PATIENT_SUBTYPE | VARCHAR2 1 | Patient subtype (often blank in current data) |
+| ADMISSION_TYPE | VARCHAR2 1 | Admission type code — observed `'A'`. **NOT a duplicate of `ADM_TYPE`** despite the similar name — both populated with different values |
+| ADM_TYPE | VARCHAR2 1 | Different admission classification — observed `'R'` |
+| ADMITTED_FROM_HIS | VARCHAR2 15 | HIS admit-source code (often blank for outpatient) |
+
+#### Insurance
+
+| Column | Type | Description |
+|--------|------|-------------|
+| INSURANCE1_ID | VARCHAR2 15 | Primary insurance (FK by code → V_S_LAB_INSURANCE.ID). Often blank at stay level (insurance lives on order) |
+| INSURANCE2_ID | VARCHAR2 15 | Secondary insurance |
+| INSURANCE3_ID | VARCHAR2 15 | Tertiary insurance |
+| MEDICAL_SERVICE_ID | VARCHAR2 5 | Medical service (FK by code → V_S_LAB_MEDICAL_SERVICE.ID). Often blank — same pattern as on V_P_LAB_ORDER |
+
+#### Diagnosis
+
+| Column | Type | Description |
+|--------|------|-------------|
+| DIAGNOSIS1_ID | VARCHAR2 11 | Primary diagnosis code (often blank for outpatient lab visits) |
 | DIAGNOSIS2_ID | VARCHAR2 11 | Secondary diagnosis code |
-| HIS_PATIENT_TYPE | VARCHAR2 1 | HIS patient type |
-| ADMIT_FLAG | VARCHAR2 1 | Admitted flag |
-| DISCHARGE_FLAG | VARCHAR2 1 | Discharged flag |
-| ADMITTING_DOCTOR_ID | VARCHAR2 15 | Admitting doctor (FK by code → V_S_LAB_DOCTOR.ID) |
-| CONSULTING_DOCTOR_ID | VARCHAR2 15 | Consulting doctor (FK by code → V_S_LAB_DOCTOR.ID) |
+| DIAGNOSIS3_ID | VARCHAR2 11 | Tertiary diagnosis code |
+| DIAGNOSIS_TEXT | VARCHAR2 80 | **Free-text diagnosis description — workhorse field**. Often populated where the structured ID columns are blank. PHI-adjacent |
+| DIAGNOSIS_CODING_STANDARD | VARCHAR2 1 | ICD-9 vs ICD-10 indicator (often blank in samples) |
+
+#### Workflow Flags (all VARCHAR2 1)
+
+| Column | Description |
+|--------|-------------|
+| ADMIT_FLAG | **Documented as "Admitted flag" but observed always `'N'` in 7-day data — appears unused/vestigial in current operations.** Even on the 1,199 inpatient (`HIS_PATIENT_TYPE='I'`) stays. Don't filter on `'Y'`; infer admitted state from `HIS_PATIENT_TYPE='I'` instead |
+| DISCHARGE_FLAG | Same — always `'N'`. Infer discharge state from `DISCHARGE_DT IS NOT NULL` |
+| ADMIT_OUTP_FLAG | Outpatient admit flag — observed `'N'` in samples |
+| DELETED_FLAG | Soft-deletion flag. Most queries should filter `DELETED_FLAG = 'N'` to exclude deleted records |
+| ACTIVE_FLAG | CHAR 1. Observed `'R'` (not Y/N) — has its own enum (likely Routine/Released/Resulted) |
+| RESULT_CHANGED_FLAG | Result-amendment indicator at the stay level |
+| DISCH_REP_PRINTED | Discharge report printed |
+| JUST_POSTED_HIS_FLAG | Just-posted-from-HIS indicator (`'Y'` on freshly-imported stays from Epic) |
+
+#### Free Text & Other
+
+| Column | Type | Description |
+|--------|------|-------------|
+| COMMENTS | CLOB 4000 | Stay-level comments (PHI-adjacent) |
+| MSPQ | CLOB 4000 | Medicare Secondary Payor Questionnaire response |
+| CONTACT_PHONE | VARCHAR2 20 | Stay-specific contact phone (often blank; distinct from patient's phone) |
+| CONTACT_PHONE_EXT | VARCHAR2 11 | Phone extension |
+| GENETICS_VISIT_STATUS | VARCHAR2 1 | Genetics-specific visit status |
+| ACCIDENT_CODE | VARCHAR2 1 | Injury/accident-related visit code |
+| SURGERY | VARCHAR2 12 | Surgery indicator/code (observed single-char `'O'` despite VARCHAR2 12) |
+
+#### Empty / Vestigial (DATA_LENGTH = 0 — confirms billing is in SoftAR, not here)
+
+`TOTAL_CHARGES` (col 14), `TOTAL_PAYMENTS` (col 16), `PATIENT_BAL` (col 19). All financial slots — schema placeholders never written. SoftAR owns the financial domain via V_P_ARE_VISIT.
+
+**Notes:**
+
+- **`ADMISSION_DT` can be in the FUTURE** — pre-scheduled outpatient visits are posted from Epic in advance with future ADMISSION_DT (observed up to ~5 months ahead). For "actual past visits", filter `ADMISSION_DT <= SYSDATE` in addition to your start date. For "completed visits", check `DISCHARGE_DT IS NOT NULL`. For "actual lab work happened in window", use a downstream timestamp like `V_P_LAB_ORDER.ORDERED_DT` or `V_P_LAB_TEST_RESULT.VERIFIED_DT`.
+- **`ADMIT_FLAG` and `DISCHARGE_FLAG` are vestigial** — observed always `'N'` even on inpatient stays. Don't trust them as filters; derive admit/discharge state from `HIS_PATIENT_TYPE` and `DISCHARGE_DT IS NOT NULL`.
+- **`BILLING` (Epic CSN) is unique per stay and never null** — safe as a join key. This is what links V_P_LAB_MISCEL_INFO.OWNER_ID → V_P_LAB_STAY.BILLING.
+- **`MOTHER_BILLING` defaults to BILLING** — does NOT reliably identify newborns. Only carries a different CSN on real newborn-mother linkages; use carefully.
+- **`MRNNUM` denormalized** — saves the V_P_LAB_PATIENT join when only MRN is needed.
+- **`ADMISSION_DATE` ≈ `ADMISSION_DT`** — both DATE type, both populated, appear duplicated in samples. Same for DISCHARGE pair.
+- **`ADMISSION_TYPE` and `ADM_TYPE` are NOT duplicates** despite similar names — different enums, both populated.
+- **`DOCTOR_ID` is the outpatient workhorse**; `ADMITTING_DOCTOR_ID` and `CONSULTING_DOCTOR_ID` activate for inpatient.
+- **`DIAGNOSIS_TEXT` is the workhorse for outpatient**; structured `DIAGNOSIS1_ID` etc. are sparse.
+- **`DELETED_FLAG`**: filter `'N'` to exclude soft-deleted stays from reports.
+- **Outpatient is dominant** (87%); inpatient is a small slice (2.6%). Plan queries accordingly.
 
 ### V_P_LAB_ORDER — Order data
 
