@@ -1825,7 +1825,7 @@ Large table (100+ columns). Key columns grouped by category below.
 | AA_ID | NUMBER 22 | PK (NOT NULL) |
 | TEST_RESULT | NUMBER 22 | **FK → V_P_BB_Test.AA_ID** (counterintuitive name — this is the parent-test FK, not result content) |
 | ORDERNO | VARCHAR2 11 | Order number — denormalized from V_P_BB_BB_Order |
-| ALT_BILLINGNO | VARCHAR2 23 | Alternate billing identifier (semantics unverified — width matches Epic CSN shape but no direct evidence of equivalence) |
+| ALT_BILLINGNO | VARCHAR2 23 | Alternate billing identifier (width matches Epic CSN shape; **direct equivalence to STAY.BILLING not yet verified**) |
 | RESULTNO | NUMBER 22 | Sequential result number within parent |
 | ROOT_RESULTNO | NUMBER 22 | Root result number — paired with `VERSION` for amendment tracking (semantics inferred from naming; not directly verified) |
 | VERSION | NUMBER 22 | Version/iteration counter for amended results (inferred from naming) |
@@ -1835,11 +1835,11 @@ Large table (100+ columns). Key columns grouped by category below.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| CODE | VARCHAR2 5 | **Result-row component code — distinct from V_P_BB_Test.CODE.** A single Test row can produce multiple Result rows, each with its own component CODE. **Verified** by Q4 cardinality probe over 30 days (14,187 rows, top values: ABORH 38%, AS3 31%, RETYP 11%, NCABO 8%) and the V_P_BB_Test → V_P_BB_Result mapping (cross-validated by row counts; **direct Test↔Result CODE mapping not yet probed via JOIN — needs verification query V2**) |
-| RESULT0 ... RESULT23 | VARCHAR2 2 | Positional reaction-grade slots, 0-indexed (24 positions total). **Verified** that different test types use different position subsets (sampled NCABO uses 3 positions, ABORH uses ~6, AS3 uses 0–1). Values observed include `0`, `4+`, `NEG`, etc. — agglutination grades and short reaction codes. **Position-to-meaning mapping per CODE is NOT documented and would require running results against SCC test setup tables to verify** |
-| INTERPRETATION0 | VARCHAR2 5 | Short interpretation code. Observed values include `A` (likely ABO group A) — **semantic mapping inferred from 5-row sample, not verified across the population** |
-| INTERPRETATION1 | VARCHAR2 5 | Second interpretation slot. Observed values include `POS`, `NEG` — **semantic mapping inferred from 5-row sample** |
-| AUTOINT | RAW(2) | 2-byte binary auto-interpretation code. Displays as Java byte-array (`[B@xxxxxxxx`) in many SQL clients; use `RAWTOHEX(AUTOINT)` to inspect actual bytes. **Distinct value count not yet probed (verification query V4)** |
+| CODE | VARCHAR2 5 | **Result-row component code — distinct from V_P_BB_Test.CODE.** A single Test row can produce multiple Result rows, each with its own component CODE. **Verified** by direct Test↔Result join (V2): see "Test→Result component mapping" table below |
+| RESULT0 ... RESULT23 | VARCHAR2 2 | Positional reaction-grade slots, 0-indexed (24 positions total). Verified that different test types use different position subsets in a 5-row sample (NCABO uses 3, ABORH uses ~6, AS3 uses 0–1). Values observed include `0`, `4+`, `NEG`, etc. **Slot-to-reaction mapping per CODE is not documented and would require additional verification per code** |
+| INTERPRETATION0 | VARCHAR2 5 | Short interpretation code. Observed values include `A` in 5-row sample. **Semantic mapping NOT verified across population** |
+| INTERPRETATION1 | VARCHAR2 5 | Second interpretation slot. Observed values include `POS`, `NEG` in 5-row sample. **Semantic mapping NOT verified across population** |
+| AUTOINT | RAW(2) | 2-byte binary auto-interpretation code. Displays as Java byte-array (`[B@xxxxxxxx`) in many SQL clients; use `RAWTOHEX(AUTOINT)` to inspect actual bytes. **Verified low-cardinality enum** (V4): only 3 distinct values across 14,193 rows, 0 NULLs. Functions as a tri-state flag despite the 2-byte capacity. Specific byte-value semantics still unverified |
 | RESULT_COMMENT | VARCHAR2 26 | Comment field — only 26 characters wide (much shorter than V_P_LAB_TEST_RESULT's CLOB COMMENTS). Observed blank in 5-row sample |
 
 #### Dates
@@ -1848,7 +1848,7 @@ Large table (100+ columns). Key columns grouped by category below.
 |--------|------|-------------|
 | REQUESTEDDT | DATE | When result was requested |
 | RESULTEDDT | DATE | When the result was posted |
-| REVIEWDT | DATE | First review timestamp |
+| REVIEWDT | DATE | First review timestamp. **Use `REVIEWDT IS NOT NULL` for "actually reviewed" filtering — NOT `STATUS='C'`** (see Notes) |
 | SUP_REVIEWDT | DATE | Supervisory review timestamp |
 | FIRST_REPORTEDDT | DATE | First report date/time |
 | BILLINGDT | DATE | Billing date/time |
@@ -1861,7 +1861,7 @@ Large table (100+ columns). Key columns grouped by category below.
 | REVIEW_TECH | VARCHAR2 16 | First-review tech. Pairs with `REVIEWDT` |
 | SUP_REVIEW_TECH | VARCHAR2 16 | Supervisory-review tech. Pairs with `SUP_REVIEWDT` |
 
-Three-tier review chain: TECH (writes result) → REVIEW_TECH (reviews) → SUP_REVIEW_TECH (supervisor confirms). Most rows in samples have only TECH + REVIEW_TECH; supervisory review appears rare.
+Three-tier review chain: TECH (writes result) → REVIEW_TECH (reviews) → SUP_REVIEW_TECH (supervisor confirms). Supervisory review appears rare in samples.
 
 #### Workstations
 
@@ -1874,10 +1874,10 @@ Three-tier review chain: TECH (writes result) → REVIEW_TECH (reviews) → SUP_
 
 | Column | Type | Description |
 |--------|------|-------------|
-| STATUS | CHAR 1 | Result status. **Verified enum** over 30 days (Q3, 14,187 rows): `C` (85.3%), `N` (14.7%). No other values appear. **Hypothesis (NOT yet verified)**: `C` = complete/reviewed; `N` = new/pending review. Verification query V1 tests this by joining STATUS to REVIEWDT-populated state |
-| CANCELLED_STATUS | CHAR 1 | Cancellation status. Sample values include `C` and `R`; full enum cardinality NOT yet probed |
-| FLAG | CHAR 1 | Generic flag (semantics unverified) |
-| RELATION | CHAR 1 | Relation flag (semantics unverified) |
+| STATUS | CHAR 1 | Result status. **Verified enum** over 30 days: `C` (85.3%), `N` (14.7%). **Verified semantics (V1):** `STATUS='N'` ⇔ `REVIEWDT IS NULL` (100% of N rows have no review). `STATUS='C'` does NOT mean reviewed — only ~55% of C rows have REVIEWDT populated. C is set when the result is finalized/posted; review can come later (or not at all). Don't use STATUS to filter for "reviewed" — use `REVIEWDT IS NOT NULL` |
+| CANCELLED_STATUS | CHAR 1 | Cancellation status. Sample values include `C` and `R`; **full enum cardinality NOT yet probed** |
+| FLAG | CHAR 1 | Generic flag — semantics unverified |
+| RELATION | CHAR 1 | Relation flag — semantics unverified |
 | BILLING_ACTIVE | CHAR 1 | Billing-active flag |
 | REPORT_FLAGS | NUMBER 22 | Report flag bitmask. Observed values: `575` (most), `63` — same recurring column across BB views |
 
@@ -1886,26 +1886,53 @@ Three-tier review chain: TECH (writes result) → REVIEW_TECH (reviews) → SUP_
 | Column | Type | Description |
 |--------|------|-------------|
 | QC_RACK | VARCHAR2 5 | QC rack identifier (e.g., `TUHQC`) — links result to QC batch tracking |
-| SYSTEM_FACTOR | NUMBER 22 | System factor (observed `0` in samples; semantics unverified) |
-| USER_FACTOR | NUMBER 22 | User factor (observed `0` and `1` in samples; semantics unverified) |
+| SYSTEM_FACTOR | NUMBER 22 | System factor (observed `0` in 5-row sample; semantics unverified) |
+| USER_FACTOR | NUMBER 22 | User factor (observed `0` and `1` in 5-row sample; semantics unverified) |
+
+#### Test → Result component fanout (verified V2/V3)
+
+V_P_BB_Test rows can produce 1 to 9 V_P_BB_Result rows. Verified mappings over 30 days:
+
+| Parent Test CODE | Result CODEs | Fanout |
+|------------------|--------------|--------|
+| (most codes — ABID, ABORH directly-ordered, DATC3, DATIG, DATP, E, FYA, FYB, JKA, KELL, NCABO, RETYP, XMAHG, XMASS, XMIS, etc.) | (same CODE as Test) | **1:1** |
+| TS3 | ABORH, AS3 | 1:2 |
+| NCORD | CRH, CABO | 1:2 |
+| NHEEL | HABO, HRH | 1:2 |
+| CORD | CRH, CDAT, CABO | 1:3 |
+| STDA | SABRH, DABRH, DNUM | 1:3 |
+| HEEL | NEO, HRH, HDAT, HABO | 1:4 |
+| UNIT1 | CULT, HEMOL, CLERK, APPER | 1:4 |
+| **PRET1** | DATC3, ICTER, DATP, AS3, DATIG, ABORH, CLERK, HEMOL | **1:8** |
+| **TRX1** | HEMOL, PATH, ICTER, CLERK, AS3, DATIG, ABORH, DATP, DATC3 | **1:9** (largest) |
 
 **Notes:**
 
 - **Volume**: ~473 result rows/day; 14,187 rows over 30 days.
 - **`TEST_RESULT` is the FK to V_P_BB_Test.AA_ID** — counterintuitive name, but the column name on this view is the parent-test pointer, not the result content.
-- **`RESULT0`–`RESULT23` slot semantics differ per CODE.** Each test type uses its own subset of positions. The slot-to-reaction mapping for any given CODE is not documented in CLAUDE.md and would require additional probing against SCC test setup tables (or sampling per-CODE) to map definitively.
-- **Result-row CODE differs from parent Test CODE.** Q4 confirmed: a single TS3 Test row produces ABORH and AS3 Result rows (component-fanout pattern); cord tests appear to produce CRH/CABO/CDAT Result rows. **The exact Test.CODE → Result.CODE mapping is hypothesized from row-count math; verification query V2 tests it directly.**
-- **`STATUS` enum**: `C` (85%) / `N` (15%). **What `C` and `N` mean operationally is unverified** — see verification query V1.
-- **`AUTOINT` is RAW(2)** — opaque to SQL clients without `RAWTOHEX()`. Distinct-value count not yet probed.
+- **`RESULT0`–`RESULT23` slot semantics differ per CODE.** Each test type uses its own subset of positions. Slot-to-reaction mapping per code not yet documented.
+- **Result-row CODE differs from parent Test CODE.** Verified Test→Result mappings in the table above. Multi-component tests (TS3, CORD, HEEL, PRET1, TRX1, etc.) generate one Result row per component, each with its own CODE.
+- **`STATUS` enum semantics (V1 verified)**:
+  - `STATUS='N'` (14.7%) → REVIEWDT IS NULL in 100% of cases. N = pending review / not finalized.
+  - `STATUS='C'` (85.3%) → REVIEWDT populated in only ~55% of cases. **C does NOT mean reviewed** — it likely means "Complete/finalized" with review tracked separately.
+  - **For "actually-reviewed results" filtering, use `REVIEWDT IS NOT NULL`, NOT `STATUS='C'`.**
+- **`AUTOINT` (V4 verified)**: 2-byte RAW always populated (0 NULLs); only 3 distinct values across 14,193 rows. Functions as a tri-state enum despite the 2-byte capacity. Specific byte values still unverified — use `RAWTOHEX(AUTOINT)` to inspect.
 - **3-tier review chain**: TECH/REVIEW_TECH/SUP_REVIEW_TECH paired with RESULTEDDT/REVIEWDT/SUP_REVIEWDT.
-- **Result-side ORDERNO 7,389 distinct over 30 days** vs 8,622 BB orders → 1,233 BB orders generate no Result rows (most are inventory orders).
+- **Result-side ORDERNO 7,389 distinct over 30 days** vs 8,622 BB orders → 1,233 BB orders generate no Result rows (mostly inventory orders).
+- **Largest fanouts are workup tests**: TRX1 (Transfusion Reaction, 1:9) and PRET1 (Pre-Transfusion 1, 1:8) share most components — DATC3, DATIG, DATP, AS3, ABORH, CLERK, HEMOL appear on both. TRX1 adds PATH; PRET1 adds ICTER.
 
-#### Open verification work (hypotheses still in `bb_result_verification.sql`)
+#### Outstanding verification work
 
-- **V1**: STATUS='C' ⇔ REVIEWDT populated. Crosstab probe.
-- **V2**: V_P_BB_Test.CODE → V_P_BB_Result.CODE mapping (TS3 → ABORH+AS3, etc.). Direct join probe.
-- **V3**: CORD/NCORD → CRH+CABO+CDAT mapping. Same join probe handles this.
-- **V4**: AUTOINT distinct value count.
+These hypotheses are NOT yet directly verified — flagged so future query authors know:
+
+- **`RESULT0`-`RESULT23` slot-to-reaction mapping per CODE** — would require per-code sampling or SCC test setup table inspection.
+- **`INTERPRETATION0`/`INTERPRETATION1` semantic meanings** — only seen in 5 sample rows; need population-wide cardinality probe.
+- **`CANCELLED_STATUS` full enum** — only `C` and `R` seen in samples; full distinct-value probe not run.
+- **`AUTOINT` byte-value meanings** — known to be 3 distinct values; specific values and what they map to require RAWTOHEX inspection plus correlation with other fields.
+- **`ROOT_RESULTNO`/`VERSION` amendment-chain semantics** — inferred from naming.
+- **`ALT_BILLINGNO` ↔ Epic CSN equivalence** — width matches but no direct verification.
+- **`SPECIMENNO`** — observed `0` in samples; FK target unknown.
+- **`SYSTEM_FACTOR`/`USER_FACTOR`** — observed `0`/`1` in samples; calculation purpose unverified.
 
 ### V_P_BB_Test — Blood bank test
 
