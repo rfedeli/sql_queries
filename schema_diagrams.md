@@ -264,29 +264,33 @@ erDiagram
 
     V_P_BB_BB_Order {
         NUMBER AA_ID PK
-        VARCHAR ORDERNO "= V_P_LAB_ORDER.ID"
+        VARCHAR ORDERNO "= V_P_LAB_ORDER.ID (P-type only)"
         VARCHAR MRN
+        CHAR ORDER_TYPE "P=patient 80pct I=inventory 20pct"
         VARCHAR REQUESTING_PHYSICIAN
-        VARCHAR DEPOT "site"
+        VARCHAR DEPOT "site T1 J1 etc"
         DATE REQUESTEDDT
         DATE COLLECTEDDT
         DATE RECEIVEDDT
+        DATE OUTDATEDT "collection + 3d sample window"
         DATE REPORTDT
     }
     V_P_BB_Result {
         NUMBER AA_ID PK
-        VARCHAR ORDERNO FK
-        NUMBER TEST_RESULT FK
-        VARCHAR CODE
-        CHAR STATUS
+        NUMBER TEST_RESULT FK "FK to BB_Test.AA_ID counterintuitive name"
+        VARCHAR ORDERNO
+        VARCHAR CODE "component code differs from parent Test.CODE"
+        CHAR STATUS "C=finalized 85pct N=pending 15pct (C does NOT mean reviewed)"
         DATE RESULTEDDT
-        DATE REVIEWDT
+        DATE REVIEWDT "use IS NOT NULL for actually reviewed"
         DATE FIRST_REPORTEDDT
     }
     V_P_BB_Test {
         NUMBER AA_ID PK
-        VARCHAR ORDERNO FK
-        VARCHAR CODE
+        NUMBER ORD_TEST FK "canonical NUMBER FK to BB_Order.AA_ID"
+        VARCHAR ORDERNO "string copy denorm"
+        VARCHAR CODE "TS3 RETYP NCABO ABORH etc"
+        VARCHAR ORDEREDCODE "= CODE for direct orders blank for reflex components"
         CHAR STATUS
         VARCHAR FINAL_INTERPRETATION
         DATE REQUESTEDDT
@@ -294,10 +298,16 @@ erDiagram
     }
     V_P_BB_Patient {
         NUMBER AA_ID PK
-        VARCHAR MRN
-        VARCHAR ABO "blood type"
+        VARCHAR MRN "UNIQUE indexed"
+        VARCHAR SOUNDEX "phonetic 3 indexes first-class lookup"
+        VARCHAR LAST_NAME
+        VARCHAR FIRST_NAME
+        VARCHAR MIDDLE_NAME "stores INITIALS despite name avg len 1.015"
+        DATE DOBDT "no underscore vs LAB_PATIENT.DOB_DT"
+        VARCHAR ABO "blood type 95.7pct"
         CHAR RH
-        VARCHAR HISTORICAL_ABO
+        VARCHAR HISTORICAL_ABO "17pct populated"
+        DATE STAMP_DATE "indexed - use for windowing"
         CHAR SEX
     }
     V_P_BB_Unit {
@@ -322,9 +332,24 @@ erDiagram
 ```
 
 **Operational notes**
-- **Cross-module join key is `ORDERNO`** (VARCHAR2 11) — matches `V_P_LAB_ORDER.ID` exactly
+- **Cross-module join key is `ORDERNO`** (VARCHAR2 11) — matches `V_P_LAB_ORDER.ID` exactly. **Only `ORDER_TYPE='P'` (patient, ~80%) BB orders have a matching Lab order; `ORDER_TYPE='I'` (inventory, ~20%) do not** — INNER JOIN to V_P_LAB_ORDER silently drops the inventory side
 - **`V_P_BB_Result.TEST_RESULT` is an FK to `V_P_BB_Test.AA_ID`** (not test result content; counterintuitive naming)
-- **`STATUS` codes are CHAR 1** — workflow state per row (no canonical enum surfaced yet)
+- **`V_P_BB_Test.ORD_TEST` is the canonical NUMBER FK to `V_P_BB_BB_Order.AA_ID`** — more efficient than the ORDERNO string-match
+- **STATUS enums are view-specific:**
+  - V_P_BB_Test: blank (87%) / `N` (13%) — `N` likely "in-flight unreleased"
+  - V_P_BB_Result: `C` (85%) / `N` (15%) — `C` is "finalized" but **NOT necessarily reviewed**; use `REVIEWDT IS NOT NULL` for actually-reviewed filtering
+- **Multi-component test fanout** — one V_P_BB_Test row can produce multiple V_P_BB_Result rows with different CODEs:
+  - `TS3` → `ABORH` + `AS3` (1:2)
+  - `CORD` → `CRH` + `CABO` + `CDAT` (1:3); `NCORD` → `CRH` + `CABO` (1:2, no CDAT)
+  - `HEEL` → 4 components; `STDA`/`UNIT1` → 3-4
+  - `PRET1` → 8 components; `TRX1` → 9 components (largest fanout — Transfusion Reaction workup)
+- **V_P_BB_Patient is built for phonetic lookup** — SOUNDEX has 3 dedicated indexes (alone, with DOB+TOB, with SSN). Patient name searches should consider Soundex-based fuzzy matching, not just `LIKE`
+- **Vestigial columns observed across BB views** (verified via deep-probe):
+  - V_P_BB_BB_Order: `ORDERTYPE`, `PATIENTTYPE` (always blank — distinct from `ORDER_TYPE`)
+  - V_P_BB_Test: `TEST_TYPE` (always blank)
+  - V_P_BB_Patient: `SITE`, `DOD`, `LAST_DISCHARGE_DATE`, `PDF`, `EXTERNALID`, `CLIENTID`, `TITLE`, `CASENO` (all 0%); `NEXT_MRN`/`AUXILIARY_MRN` are placeholder constants
+- **V_P_BB_Patient.MOTHER_MRN is sparsely real** — ~3% of patients (newborns) have a real mother's MRN; the rest carry a 1-char placeholder. Filter `LENGTH(MOTHER_MRN) > 1` to find real linkages
+- **V_P_BB_Patient base-table column naming differs** — view exposes friendly names; base table `BBANK_PATIENT` uses P-prefix (PLNAME, PFNAME, PDOB, PSDX, PTSTAMP, etc.). `PTOB` (time of birth) exists in base but **not in the view**
 
 ---
 
@@ -334,9 +359,9 @@ How a single patient encounter spans Lab, Blood Bank, and AR via shared identifi
 
 ```mermaid
 erDiagram
-    V_P_LAB_ORDER ||--o{ V_P_BB_BB_Order : "ORDER.ID = ORDERNO"
+    V_P_LAB_ORDER ||--o{ V_P_BB_BB_Order : "ORDER.ID = ORDERNO (P-type only)"
     V_P_LAB_ORDER ||--o{ V_P_ARE_VISIT : "ORDER.ID = VTORGORDNUM"
-    V_P_LAB_ORDERED_TEST ||--o{ V_P_BB_BB_Order : "OT.ORDER_NO = ORDERNO"
+    V_P_LAB_ORDERED_TEST ||--o{ V_P_BB_BB_Order : "OT.ORDER_NO = ORDERNO (P-type only)"
     V_P_LAB_STAY ||--o{ V_P_LAB_MISCEL_INFO : "STAY.BILLING = OWNER_ID"
 
     V_P_LAB_STAY {
@@ -379,6 +404,7 @@ erDiagram
 - **`V_P_LAB_MISCEL_INFO` is keyed by Epic CSN** (`OWNER_ID = STAY.BILLING`) — used to attach arbitrary HIS-pushed metadata to a stay (e.g., expected discharge date)
 - **One Epic CSN can produce multiple lab orders** (each with its own `V_P_LAB_ORDER.ID`); each lab order maps 1:1 to at most one BB order and 1:1 to at most one AR visit
 - **Same `BILLING` value lives on both `STAY` and `ORDER`** — same identifier, denormalized for query convenience. Querying for CSN context can stop at either level
+- **Lab ↔ BB cross-link only fires for `ORDER_TYPE='P'`** — ~80% of BB orders link back to a SoftLab order (patient-context). The other ~20% are inventory orders (`ORDER_TYPE='I'`: donor processing, unit operations, QC) with no Lab counterpart. INNER JOIN on ORDERNO silently drops the inventory side; use LEFT JOIN or filter `ORDER_TYPE` explicitly
 
 ---
 
