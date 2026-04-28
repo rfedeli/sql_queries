@@ -1006,21 +1006,31 @@ Two parallel blocks: `P_R_I_*` (cols 223–231) and `PRI_*` (cols 232–240) for
 
 ### V_P_LAB_TUBEINFO — Specimen tube info (denormalized)
 
+**13 columns total** — convenience denormalized view bridging tubes to patient demographics for barcode-trace and specimen-lookup workflows. Volume: ~9.8K rows/day. **Treat as a display-convenience view, NOT a source of truth** — several "key" denormalized fields are sparsely populated.
+
 | Column | Type | Description |
 |--------|------|-------------|
-| AA_ID | NUMBER | PK (NOT NULL) |
+| AA_ID | NUMBER 22 | PK (NOT NULL) |
 | ORDER_ID | VARCHAR2 11 | Order number |
-| BARCODE | VARCHAR2 31 | Specimen barcode |
+| BARCODE | VARCHAR2 31 | Specimen barcode. **NULL on ~28.7% of rows** in 7-day data (19,765 of 68,824). Filter `WHERE BARCODE IS NOT NULL` for barcoded-only. **Unique when populated** — perfect 1:1 with non-null rows, safe as a join key |
 | COLLECTION_DT | DATE | Collection date/time |
-| COLLECTION_PHLEB | VARCHAR2 16 | Collecting phlebotomist |
-| SPECIMEN_TYPE | VARCHAR2 12 | Specimen type |
-| TUBE_TYPE | VARCHAR2 8 | Tube type |
-| LAST_NAME | VARCHAR2 50 | Patient last name |
+| COLLECTION_PHLEB | VARCHAR2 16 | Collecting phlebotomist — **sparsely populated**; for reliable collector identity use `V_P_LAB_SPECIMEN.COLLECTION_PHLEB_ID` (97.1% populated) |
+| SPECIMEN_TYPE | VARCHAR2 12 | Specimen type — **frequently empty** even on physical tubes. For reliable specimen type, use `V_P_LAB_SPECIMEN.SPECIMEN_TYPE` |
+| TUBE_TYPE | VARCHAR2 8 | Tube type code (matches V_P_LAB_TUBE.TUBE_TYPE) |
+| LAST_NAME | VARCHAR2 50 | Patient last name (denormalized from V_P_LAB_PATIENT) |
 | FIRST_NAME | VARCHAR2 80 | Patient first name |
-| MIDDLE_INITIAL | VARCHAR2 27 | Patient middle initial |
-| SEX | VARCHAR2 1 | Patient sex |
-| DATE_OF_BIRTH | DATE | Patient date of birth |
-| MRN | VARCHAR2 23 | Medical record number |
+| MIDDLE_INITIAL | VARCHAR2 27 | Patient middle initial — usually empty |
+| SEX | VARCHAR2 1 | Patient sex — reliably populated |
+| DATE_OF_BIRTH | DATE | Patient date of birth — reliably populated |
+| MRN | VARCHAR2 23 | Medical record number — reliably populated |
+
+**Notes:**
+- **Volume**: ~9.8K rows/day; 1 row per tube. Cohort cross-validates with V_P_LAB_SPECIMEN (6,290 distinct MRNs/week vs SPECIMEN's 6,289).
+- **Higher row count than V_P_LAB_TUBE** (~9.8K vs ~9.1K daily) because this filters on `COLLECTION_DT` (when collected) while TUBE filters on `RECEIPT_DT` (when received). Tubes that are collected but not yet received appear here first.
+- **`BARCODE` is unique-when-populated**: 49,059 distinct barcodes across 49,059 non-null rows in the 7-day sample. Safe as a join key with `IS NOT NULL` guard. The 28.7% null rate is the gotcha.
+- **Reliable demographics** (LAST/FIRST_NAME, SEX, DOB, MRN) — these denormalize cleanly. Use this view if you need patient context attached to a tube without the V_P_LAB_PATIENT join.
+- **Unreliable specimen/collector data**: `BARCODE`, `SPECIMEN_TYPE`, `COLLECTION_PHLEB` are sparse. Don't use this view as the source of truth for those fields — use V_P_LAB_SPECIMEN / V_P_LAB_SPECIMEN_BARCODE instead.
+- **Barcode-trace queries** that join on BARCODE should expect ~28.7% of recent tubes to fall out due to null barcode. If the goal is "all tubes with patient context," use V_P_LAB_TUBE → V_P_LAB_SPECIMEN → V_P_LAB_PATIENT instead.
 
 ### V_P_LAB_SPECIMEN_BARCODE — Tube barcode
 
