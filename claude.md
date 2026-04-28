@@ -1717,24 +1717,100 @@ Large table (100+ columns). Key columns grouped by category below.
 
 ### V_P_BB_BB_Order — Blood bank order
 
+**45 columns total** — central entry point of the SoftBank module. Volume: ~287 orders/day (~4.5% of SoftLab volume). **80% of rows are patient-linked (`ORDER_TYPE='P'`) with a matching V_P_LAB_ORDER; 20% are inventory orders (`ORDER_TYPE='I'`) with NO V_P_LAB_ORDER cross-link.** No DATA_LENGTH=0 vestigial columns — BB schema is leaner than SoftLab.
+
+#### Identity & Joins
+
 | Column | Type | Description |
 |--------|------|-------------|
-| AA_ID | NUMBER 14 | PK |
-| ORDERNO | VARCHAR2 11 | Order number (unique; cross-links to V_P_LAB_ORDERED_TEST.ORDER_NO) |
-| MRN | VARCHAR2 23 | Medical record number |
-| REQUESTING_PHYSICIAN | VARCHAR2 15 | Requesting physician |
-| PHLEBOTOMIST | VARCHAR2 16 | Phlebotomist |
-| DEPOT | VARCHAR2 11 | Site / depot location |
-| ORDER_TYPE | CHAR 1 | Entity type |
-| ORDERTYPE | CHAR 1 | Order type |
-| PATIENTTYPE | CHAR 1 | Patient type |
-| LINKEDORDERNO | VARCHAR2 11 | Linked order number |
-| HOLLISTERNO | VARCHAR2 15 | Hollister number |
-| MEDICALSERVICE | VARCHAR2 5 | Medical service |
-| REQUESTEDDT | DATE | Requested date/time |
-| COLLECTEDDT | DATE | Collected date/time |
-| RECEIVEDDT | DATE | Received date/time |
-| REPORTDT | DATE | Report date/time |
+| AA_ID | NUMBER 22 | PK (NOT NULL) |
+| ORDERNO | VARCHAR2 11 | Order number — unique per row (perfect 1:1 in 30-day data). For `ORDER_TYPE='P'` rows, cross-links to `V_P_LAB_ORDER.ID` and `V_P_LAB_ORDERED_TEST.ORDER_NO`. For `ORDER_TYPE='I'` rows, no SoftLab match exists |
+| MRN | VARCHAR2 23 | Medical record number — populated for `ORDER_TYPE='P'`; may be blank/placeholder on inventory orders |
+| LINKEDORDERNO | VARCHAR2 11 | Linked order number (e.g., for crossmatch tied to a Type & Screen) |
+| AUXILIARY_ORDERNO | VARCHAR2 50 | Secondary order identifier (longer than ORDERNO; possibly external system reference) |
+| HOLLISTERNO | VARCHAR2 15 | Hollister number (specimen-tracking external ID) |
+
+#### Order Type — critical for query design
+
+| Column | Type | Description |
+|--------|------|-------------|
+| ORDER_TYPE | CHAR 1 | **The live order-type field.** Observed enum (30-day): `P` = Patient (80%, has matching V_P_LAB_ORDER), `I` = Inventory/non-patient (20%, no SoftLab cross-link — donor processing, unit operations, QC, etc.) |
+| ORDERTYPE | CHAR 1 | **VESTIGIAL — blank in all 8,622 rows over 30 days.** Documented schema slot, never populated. Don't filter on it |
+| PATIENTTYPE | CHAR 1 | **VESTIGIAL — blank in all rows.** Schema slot, not written |
+
+**Critical join implication:** `INNER JOIN V_P_LAB_ORDER ON V_P_LAB_ORDER.ID = V_P_BB_BB_Order.ORDERNO` silently excludes 20% of BB activity (the inventory orders). For all-BB-activity queries, use `LEFT JOIN` or filter explicitly on `ORDER_TYPE`.
+
+#### Dates
+
+| Column | Type | Description |
+|--------|------|-------------|
+| REQUESTEDDT | DATE | When the order was requested |
+| COLLECTEDDT | DATE | When the specimen was collected |
+| RECEIVEDDT | DATE | When the lab received the specimen |
+| TO_BE_COLLECTEDDT | DATE | Scheduled collection time |
+| REPORTDT | DATE | When the report was generated |
+| OUTDATEDT | DATE | When the order data goes stale (typically 3 days from collection — matches BB sample testing window) |
+| HISTORY_REVIEWDT | DATE | When the patient's BB history was reviewed (often blank on routine orders) |
+
+#### People
+
+| Column | Type | Description |
+|--------|------|-------------|
+| REQUESTING_PHYSICIAN | VARCHAR2 15 | Requesting physician (FK by code → V_S_LAB_DOCTOR.ID) |
+| PHLEBOTOMIST | VARCHAR2 16 | Collecting phleb. May hold real tech codes or system identities like `AUTOV` (auto-verifier) — same recurring system-user pattern as on SoftLab views |
+| HISTORY_REVIEW_TECH | VARCHAR2 16 | Tech who performed history review (FK by code → V_S_LAB_PHLEBOTOMIST.ID) |
+| REPORT_TO0, REPORT_TO1, REPORT_TO2, REPORT_TO3 | VARCHAR2 15 | Up to four report-to doctors (FK by code → V_S_LAB_DOCTOR.ID). Often blank on routine orders |
+| REPORT_TO_TYPE | RAW(4) | **4-byte binary** packing the type/role of each of the 4 REPORT_TO slots. Many SQL clients display this as Java byte-array memory addresses (`[B@xxxxxxxx`); to inspect actual bytes use `RAWTOHEX(REPORT_TO_TYPE)` or `DUMP(REPORT_TO_TYPE)` |
+
+#### Location & Routing
+
+| Column | Type | Description |
+|--------|------|-------------|
+| DEPOT | VARCHAR2 11 | Site/facility code. Observed 13-value enum (matches V_P_LAB_SPECIMEN.COLLECTION_LOCATION facility convention): `T1`/`T2`/`T4` (Temple), `J1`/`J2` (Jeanes), `C1`/`C2` (Chestnut Hill), `W1`/`W2` (W&F), `F1`/`F2` (Fox Chase), `E1` (Episcopal), `N1` (unknown). Temple alone is ~52% of BB volume |
+| WARD | VARCHAR2 15 | Ward code (e.g., `CICU`, `7NTH`, `TED`, `TUHCT`) — FK by code → V_S_LAB_CLINIC.ID likely |
+| MEDICALSERVICE | VARCHAR2 5 | Medical service code — sparsely populated (same pattern as on SoftLab views) |
+| STUDY | VARCHAR2 5 | Research study code (FK by code → V_S_LAB_STUDY.ID) |
+| COLLECTIONMODULE | VARCHAR2 30 | Collection origin marker — observed values: `LAB` (lab-collected), `SoftID.ANDR` (SoftID Android mobile app collection), blank |
+
+#### State & Priority
+
+| Column | Type | Description |
+|--------|------|-------------|
+| PRIORITY | CHAR 1 | Order priority. **Encoded as numeric digits stored as CHAR**: `0`, `4` observed in samples — DIFFERENT enum from SoftLab's S/R/T. Full enum needs further probe |
+| STATUS | CHAR 1 | Overall order status — observed values: `R`, blank. Full enum TBD |
+| CANCELLED_STATUS | CHAR 1 | Cancellation status — sparsely populated |
+| ORDER_STATUS_FLAG | CHAR 1 | Additional status flag — sparsely populated |
+| MAIN_SPEC_TYPE | VARCHAR2 8 | Main specimen tube type — observed: `PNK` (Pink/EDTA, typical for type & screen), `'NULL'` (literal text — NOT database NULL — same gotcha as `V_P_LAB_TUBE.TUBE_TYPE='NULL'`). Use `WHERE MAIN_SPEC_TYPE = 'NULL'` for the literal vs `IS NULL` for database null |
+| DIAGNOSIS | VARCHAR2 80 | Free-text diagnosis description (PHI-adjacent if populated) |
+
+#### Internal sorting / option keys
+
+| Column | Type | Description |
+|--------|------|-------------|
+| OTSPAUX_OPTKEY, OTHOLN_OPTKEY | NUMBER 22 | Internal SCC option keys. **Mirror the row's AA_ID exactly** in observed samples — likely self-reference defaults for sort/lookup |
+| OTREQ_OPTKEY | NUMBER 22 | Internal request-option key — observed `0` in samples |
+| PTS_ORDER | NUMBER 22 | Patient Transfusion Service order ordinal (auto-increment-style, distinct per row) |
+| PTS_ORDER_SORT | NUMBER 22 | PTS sort priority offset (small ± numbers: `0`, `-2`, `-4`, `-5` observed) |
+| UTS_ORDER, UTS_ORDER_SORT | NUMBER 22 | Unit Transfusion Service order + sort. Blank for patient orders; populated for unit/donor work |
+
+#### Other Flags
+
+| Column | Type | Description |
+|--------|------|-------------|
+| REPORT_FLAGS | NUMBER 22 | Report flag bitmask — `199` observed as a default across all sampled rows |
+| ENVIRONMENT0, ENVIRONMENT1 | NUMBER 22 | Two environment bitmasks (BB has two vs SoftLab's single ENVIRONMENT). Both `0` in routine patient samples |
+
+**Notes:**
+
+- **Volume**: ~287 BB orders/day, ~4.5% of SoftLab order volume. ~3K distinct patients/month, ~2.2 patient-orders per patient.
+- **`ORDER_TYPE='P'` ⇔ matching V_P_LAB_ORDER** — perfect 1:1 correlation in 30-day data. Always use this filter (or rely on the inner join) for patient-context BB queries; use `LEFT JOIN` or filter `ORDER_TYPE='I'` for inventory/donor work.
+- **`ORDERTYPE` and `PATIENTTYPE` are vestigial** — always blank. Don't confuse with `ORDER_TYPE` (the live one).
+- **`PRIORITY` uses numeric digit codes**, NOT SoftLab's S/R/T letters. Treat as a separate enum.
+- **`MAIN_SPEC_TYPE = 'NULL'`** is a literal text value on some rows, not database NULL — same gotcha as on V_P_LAB_TUBE.
+- **`REPORT_TO_TYPE` is RAW(4)** — use `RAWTOHEX()` or `DUMP()` to inspect the 4-byte packed type bitmask.
+- **`OUTDATEDT`** = collection + ~3 days; reflects the BB sample testing window. Useful for "still-valid sample" filters.
+- **`COLLECTIONMODULE`** distinguishes lab-collected (`LAB`) from mobile-collected (`SoftID.ANDR`) orders. Useful classifier for collection-method analysis.
+- **`AUTOV` recurs** as `PHLEBOTOMIST` — same auto-verifier system identity from prior discoveries (V_P_LAB_TUBE, V_P_LAB_ORDERED_TEST).
 
 ### V_P_BB_Result — Blood bank test result
 
