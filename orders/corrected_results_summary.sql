@@ -12,6 +12,13 @@ where the value actually moved, returns:
                       (RES_DT, snapshotted at mod time)
   RESULT_TO           value after this amendment
   CHANGED_BY          tech who made the amendment (MOD_TECH)
+  CHANGED_BY_NAME     full name of the amender from V_S_SEC_USER
+                      ("LASTNAME, FIRSTNAME"). Blank when MOD_TECH is
+                      a system identity (HIS/I/AUT/AUTON/SCC/AUTOV/RBS),
+                      a service account with no name on file, or
+                      didn't match any V_S_SEC_USER row. Filter on
+                      CHANGE_SOURCE='Person' downstream if you only
+                      want named amenders.
   CHANGED_AT          when the amendment happened (MOD_DT)
   IS_PRIVILEGED       'Y' when the amender's V_S_SEC_USER row has
                       SCC_USER='Y' (rare super-account, ~7 rows total)
@@ -71,13 +78,13 @@ Filters
   - Value actually changed (null-safe DECODE) — drops DMOD non-value
     edits and any RMOD that didn't ultimately move the value.
   - :DEPOT on COLLECT_CENTER_ID (LIKE wildcards supported)
-  - System / interface amendments excluded — MOD_TECH NOT IN
-    (HIS, SCC, AUTOV, RBS, I/AUT, AUTON), and MOD_TECH non-null /
-    non-blank. The report is human-amender focused. Inventory verified
-    via setup/test_result_history_probe.sql §42 + diagnostic top-10.
-    The CHANGE_SOURCE 'System' branch is intentionally kept in the
-    classifier so the column behaves correctly if the WHERE filter
-    is ever removed.
+
+  System and interface amendments (HIS, SCC, AUTOV, RBS, I/AUT, AUTON)
+  are NOT excluded — they're real corrected results too. The
+  CHANGE_SOURCE column tags every row so a downstream consumer can
+  filter (e.g., CHANGE_SOURCE='Person' for human-only) without losing
+  the audit context. Inventory verified via
+  setup/test_result_history_probe.sql §42 + diagnostic top-10.
 
 Caveats
   - PREV_RESULT='.' means the row was cancelled at that point in
@@ -126,6 +133,10 @@ SELECT
     hf.prev_resulted_dt                             AS ORIGINAL_RESULT_DT,
     COALESCE(hf.next_prev_result, tr.RESULT)        AS RESULT_TO,
     hf.MOD_TECH                                     AS CHANGED_BY,
+    TRIM(usr.LASTNAME
+         || CASE WHEN usr.FIRSTNAME IS NOT NULL AND usr.FIRSTNAME <> ''
+                 THEN ', ' || usr.FIRSTNAME ELSE '' END)
+                                                    AS CHANGED_BY_NAME,
     hf.MOD_DT                                       AS CHANGED_AT,
     CASE
         WHEN hf.MOD_TECH IS NULL OR hf.MOD_TECH = ''
@@ -165,9 +176,6 @@ WHERE hf.MOD_DT >= TO_DATE(:START_DATE, 'YYYYMMDD')
   AND o.COLLECT_CENTER_ID LIKE :DEPOT
   AND REGEXP_LIKE(pt.ID, '^E[0-9]+$')
   AND tr.EDITED_FLAG = 'Y'
-  AND hf.MOD_TECH IS NOT NULL
-  AND hf.MOD_TECH <> ''
-  AND hf.MOD_TECH NOT IN ('HIS','SCC','AUTOV','RBS','I/AUT','AUTON')
   AND DECODE(hf.PREV_RESULT,
              COALESCE(hf.next_prev_result, tr.RESULT),
              1, 0) = 0
