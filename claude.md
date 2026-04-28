@@ -781,23 +781,119 @@ Two parallel blocks: `P_R_I_*` (cols 223–231) and `PRI_*` (cols 232–240) for
 
 ### V_P_LAB_SPECIMEN — Specimen data
 
+**72 columns total** — grouped here by category. Volume: ~9.5K rows/day, ~10.5 specimens per patient/week, ~1.5 specimens per order. **`COLLECTION_DT` is a workflow timestamp (no future-scheduling like `V_P_LAB_STAY.ADMISSION_DT`).** Note: ~14 columns are vestigial (DATA_LENGTH = 0) — listed at the bottom but unusable.
+
+#### Identity & Linkage
+
 | Column | Type | Description |
 |--------|------|-------------|
-| AA_ID | NUMBER 14 | PK |
-| PATIENT_AA_ID | NUMBER 14 | FK → V_P_LAB_PATIENT.AA_ID |
-| COLLECTION_DT | DATE | Collection date/time |
-| DRAW_TYPE | VARCHAR2 8 | Specimen draw type (e.g. 'D' for default, 'V' for venous) |
-| IS_COLLECTED | VARCHAR2 1 | Collected flag (Y/N) |
-| IS_CANCELLED | VARCHAR2 1 | Cancelled flag |
-| IS_MICRO | VARCHAR2 1 | Micro testing flag |
-| SPECIMEN_TYPE | VARCHAR2 12 | Specimen type |
-| COLLECTION_LOCATION | VARCHAR2 15 | Collection location |
-| COLLECTION_PHLEB_ID | VARCHAR2 16 | Collecting phlebotomist (FK by code → V_S_LAB_PHLEBOTOMIST.ID; also denormalized to V_P_LAB_TUBEINFO.COLLECTION_PHLEB) |
-| ASSIGNED_TO_PHLEB | VARCHAR2 16 | Phlebotomist this specimen was assigned to — intent vs. COLLECTION_PHLEB_ID = actual (FK by code → V_S_LAB_PHLEBOTOMIST.ID) |
-| NURSE_COLL | NUMBER 22 | **HL7 OBR[11] flag — authoritative nurse-vs-lab collect signal.** 1 = nurse-collect (OBR[11]='O'), 0 = lab/phleb-collect (OBR[11]='L'). Validated populated on every ABG/VBG specimen, ~92% nurse-collected. Per SCC docs (KB 13803, KB 23096). Use as primary classifier — supersedes any inference based on COLLECTION_PHLEB_ID, V_S_LAB_PHLEBOTOMIST.NURSE flag, or SoftID role behavior. |
-| DRAW_SITE | VARCHAR2 255 | Draw site |
-| COLLECTION_LIST | NUMBER 10 | Collection list number |
-| CONTAINERS_NUM | NUMBER | Number of containers |
+| AA_ID | NUMBER 22 | PK (NOT NULL) |
+| PATIENT_AA_ID | NUMBER 22 | FK → V_P_LAB_PATIENT.AA_ID |
+| RECUR_AA_ID | NUMBER 22 | FK → recurring/standing-order pattern (when this specimen comes from a recurring order) |
+| RECUR_SORT | NUMBER 22 | Sort position within the recurring pattern |
+| SPECIMEN_RECOLLECT_AA_ID | NUMBER 22 | FK → another V_P_LAB_SPECIMEN.AA_ID (when this specimen is a recollection) |
+
+**Note**: there is **no direct ORDER_AA_ID FK on this view** — the link from specimen to order goes through `V_P_LAB_TUBE.ORDER_AA_ID`. The `ORDER_AA_ID` and `ORDER_SORT` columns on this view are vestigial (DATA_LENGTH = 0).
+
+#### Dates & Times (numeric/DATE triple pattern)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| COLLECTION_DATE / COLLECTION_TIME / COLLECTION_DT | NUMBER / NUMBER / DATE | Collection timestamp — prefer `COLLECTION_DT`. **Never future-dated** (workflow timestamp, not a planning timestamp) |
+| RECEIVE_DATE / RECEIVE_TIME / RECEIVE_DT | NUMBER / NUMBER / DATE | Specimen receipt timestamp — `-1` is the "not set" sentinel for the numeric pair |
+| RECEIVE_TECH | VARCHAR2 16 | Tech who received the specimen (FK by code → V_S_LAB_PHLEBOTOMIST.ID) |
+| COLL_END_DATE / COLL_END_TIME | NUMBER 22 | End-of-collection-window pair (for interval collections) |
+| ASSIGNED_DT | DATE | When the specimen was assigned to a phleb. **Observed empty** in 7-day data |
+
+#### Type, Draw, Source
+
+| Column | Type | Description |
+|--------|------|-------------|
+| SPECIMEN_TYPE | VARCHAR2 12 | Specimen type. Often blank on pre-collection rows (populates at collection time) |
+| DRAW_TYPE | VARCHAR2 8 | Draw type. Observed enum (7-day, 66.4K rows): `D` (default/nurse, 45%), `V` (venous, 30%), blank (25%), `A` (arterial, 0.006% — likely blood gas), `URINE` (1 row, anomaly). **Strong correlation: every `D` row has `NURSE_COLL=1` and every non-`D` row has `NURSE_COLL=0`** — `DRAW_TYPE='D'` is a perfect predictor of nurse-collect |
+| SOURCE | VARCHAR2 15 | Source code |
+| SITE | VARCHAR2 255 | Site description (free text) |
+| DRAW_SITE | VARCHAR2 255 | Draw site description |
+| SOURCE_SITE | VARCHAR2 256 | Source site (HL7-style coded element) |
+| SOURCE_SITE_MOD | VARCHAR2 256 | Source-site modifier |
+| TYPE | VARCHAR2 256 | HL7-style type code |
+| TYPE_MOD | VARCHAR2 256 | Type modifier |
+| ADDITIVE | VARCHAR2 256 | Tube additive |
+| BACTI_SPEC | VARCHAR2 1 | Bacteriology specimen flag |
+| CAPILLARY | CHAR 1 | Capillary draw flag |
+| VENIPUNCTURE | CHAR 1 | Venipuncture flag — **derived from `DRAW_TYPE`**: `Y` when `DRAW_TYPE='V'`, `N` when `DRAW_TYPE='D'` |
+| URINE | VARCHAR2 0 | Vestigial (DATA_LENGTH = 0) |
+
+#### Collection State Flags (all VARCHAR2 1, Y/N unless noted)
+
+| Column | Description |
+|--------|-------------|
+| IS_COLLECTED | Collected (Y=94.3%, N=5.7% in 7-day sample) |
+| IS_COLLECTED_BOOL | NUMBER 22 — numeric mirror of `IS_COLLECTED` (`0`/`1` vs `N`/`Y`) |
+| IS_CANCELLED | Cancelled (Y=6.4%, N=93.6%) |
+| SPEC_CANCEL | VARCHAR2 1 — possibly redundant with `IS_CANCELLED`; not yet semantically separated |
+| IS_MICRO | Micro specimen (Y=6.5%, N=93.5%) |
+| IS_RECEIVED | CHAR 1 — received flag |
+| **NURSE_COLL** | NUMBER 22 — **HL7 OBR[11] flag — authoritative nurse-vs-lab collect signal.** `1` = nurse-collect (OBR[11]='O', 45% in 7-day sample), `0` = lab/phleb-collect (OBR[11]='L', 55%). Per SCC docs (KB 13803, KB 23096). Use as primary classifier — supersedes any inference based on COLLECTION_PHLEB_ID, V_S_LAB_PHLEBOTOMIST.NURSE flag, or SoftID role behavior |
+
+#### Collector / Assignment
+
+| Column | Type | Description |
+|--------|------|-------------|
+| COLLECTION_PHLEB_ID | VARCHAR2 16 | Collecting phlebotomist (FK by code → V_S_LAB_PHLEBOTOMIST.ID). **The only populated phleb identifier** — populated on 97.1% of specimens. Holds generic role codes like `PHLEB` (default phlebotomist) or `NUR` (nurse) when no individual is recorded |
+| ASSIGNED_TO_PHLEB | VARCHAR2 16 | Schema-documented "phleb-this-specimen-was-assigned-to" field, but **observed always NULL in 7-day data (0/66,384)**. Vestigial in current operations — the documented "intent vs. actual" distinction with COLLECTION_PHLEB_ID does not hold in practice |
+| ASSIGNED_BY_TECH | VARCHAR2 16 | Tech who did the assigning. Likely also empty (paired with ASSIGNED_TO_PHLEB) |
+| ASSIGNED_ROUTE_CLASS | VARCHAR2 15 | Route class for the assignment. Likely empty |
+| ASSIGNED_DT | DATE | When assigned. Observed empty |
+
+#### Volume
+
+| Column | Type | Description |
+|--------|------|-------------|
+| COLLECTION_VOLUME | NUMBER 22 | Planned collection volume. `-1` is the "not specified" sentinel |
+| COLLECTED_VOLUME | NUMBER 22 | Actual collected volume (populates after collection) |
+| SPEC_EXPECTED_VOLUME | NUMBER 22 | Expected volume from test setup (e.g., 100, 270, 450 mL) |
+| SPEC_EXPECTED_VOLUME_UNITS | VARCHAR2 80 | Expected-volume units (e.g., `mL`) |
+| DRAW_UNITS | VARCHAR2 80 | Draw units |
+
+#### Workflow & Tracking
+
+| Column | Type | Description |
+|--------|------|-------------|
+| COLLECTION_LOCATION | VARCHAR2 15 | Depot/facility code at collection (T1, J1, etc.). Populates at collection time |
+| COLLECTION_PRIORITY | CHAR 1 | Specimen-level priority — values: `R` (Routine), `S` (Stat) — distinct from order priority |
+| COLLECTION_INSTRUCTION | VARCHAR2 8 | Collection instruction code. Can hold a test ID (e.g., `TNIH`) for test-specific collection notes |
+| COLLECTION_LIST | NUMBER 22 | Collection list number |
+| COLLECTION_MODULE | VARCHAR2 30 | Collection module |
+| CURRENT_LOCATION | VARCHAR2 15 | Current specimen tracking location |
+| CONTAINERS_NUM | NUMBER 22 | Number of containers |
+| FLAGS | NUMBER 22 | Flag bitmask |
+
+#### Free Text & Quality (256-char fields, populated post-collection)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| CONDITION | VARCHAR2 256 | Specimen condition (e.g., HEMOLYZED, CLOTTED) |
+| QUALITY | VARCHAR2 256 | Specimen quality |
+| ROLE | VARCHAR2 256 | Role code |
+
+#### Empty / Vestigial (DATA_LENGTH = 0 — schema slots, never written)
+
+`CALL_VERIFIED`, `IS_INTERVAL_COL`, `IS_LABELLED`, `ORDER_AA_ID`, `ORDER_SORT`, `PLATE_DATE`, `PLATE_DT`, `PLATE_FLAG`, `PLATE_TIME`, `PLATE_TECH`, `REQUEST_CALL`, `SHOTS_NUMBER`, `URINE`, `WORKSHEET_ID`, `WRKPOS_NUM`, `WORKSTATION_ID`, `EXEC_PRIORITY`. Don't use these in queries — they're schema slots without storage. Notably:
+- `ORDER_AA_ID` here is empty (link is on `V_P_LAB_TUBE.ORDER_AA_ID`)
+- All five `PLATE_*` columns are empty (plating data lives on `V_P_LAB_TEST_RESULT.PLATE_DT/PLATE_TECH`)
+
+**Notes:**
+
+- **Volume**: ~9.5K specimens/day, ~1.5 specimens per order, ~10.5 specimens per patient/week (inflated by inpatient daily-draw cohorts).
+- **`COLLECTION_DT` is a workflow timestamp** — no future-scheduling like `V_P_LAB_STAY.ADMISSION_DT`. Safe to use for date-range filters without `<= SYSDATE` guards.
+- **`ASSIGNED_TO_PHLEB` is operationally vestigial** — never populated in 7-day data. The dict's previous "intent vs. actual" framing was wrong; `COLLECTION_PHLEB_ID` is the only populated phleb identifier.
+- **`DRAW_TYPE='D'` ⇔ `NURSE_COLL=1`** — perfect 1:1 correspondence in 7-day data. Either field is a valid nurse-collect classifier; both come from the same Epic OBR[11] signal.
+- **`DRAW_TYPE` enum**: `D` (default/nurse, 45%), `V` (venous, 30%), blank (25%), `A` (arterial, rare), `URINE` (anomaly). Note 25% blank rate.
+- **`VENIPUNCTURE` is derived from `DRAW_TYPE`** (`Y` when `V`, `N` when `D`) — redundant flag.
+- **Pre-collection vs. post-collection populated fields** — for uncollected specimens (`IS_COLLECTED='N'`), most workflow fields are blank: `SPECIMEN_TYPE`, `COLLECTION_LOCATION`, `COLLECTED_VOLUME`, `RECEIVE_DT`, `CONDITION`, `QUALITY`, etc. These populate as the specimen progresses through the workflow.
+- **`-1` sentinel** — used in `COLLECTION_VOLUME`, `RECEIVE_DATE`, `RECEIVE_TIME` for "not set" (consistent with V_P_LAB_ORDERED_TEST pattern).
+- **`COLLECTION_PHLEB_ID = 'PHLEB'`** is the SCC generic "default phlebotomist" role code, not a real person. Pre-collection specimens commonly carry this generic assignment.
 
 ### V_P_LAB_TUBE — Ordered specimen / tube info
 
