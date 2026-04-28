@@ -11,7 +11,7 @@ SELECT
     ot.WORKSTATION_ID,
     ot.TRIAGE_STATUS,
     ot.ORDERING_DT,
-    CASE WHEN tr.RESULT = 'Cancelled' THEN 'Y' ELSE 'N' END AS cancelled
+    CASE WHEN tr.STATE = 'Canceled' THEN 'Y' ELSE 'N' END AS cancelled
 FROM V_P_LAB_ORDERED_TEST ot
 JOIN V_P_LAB_ORDER o
     ON o.AA_ID = ot.ORDER_AA_ID
@@ -32,8 +32,8 @@ ORDER BY ot.ORDERING_DT DESC;
 -- PATHC add-on totals by month (active vs cancelled)
 SELECT
     TO_CHAR(ot.ORDERING_DT, 'YYYY-MM') AS order_month,
-    COUNT(CASE WHEN tr.RESULT != 'Cancelled' OR tr.RESULT IS NULL THEN 1 END) AS active_pathc,
-    COUNT(CASE WHEN tr.RESULT = 'Cancelled' THEN 1 END) AS cancelled_pathc,
+    COUNT(CASE WHEN tr.STATE <> 'Canceled' THEN 1 END) AS active_pathc,
+    COUNT(CASE WHEN tr.STATE  = 'Canceled' THEN 1 END) AS cancelled_pathc,
     COUNT(*) AS total_pathc
 FROM V_P_LAB_ORDERED_TEST ot
 JOIN V_P_LAB_ORDER o
