@@ -29,7 +29,6 @@ erDiagram
     V_P_LAB_TUBE ||--o{ V_P_LAB_SPECIMEN_BARCODE : "labeled with"
     V_P_LAB_TEST_RESULT ||--o{ V_P_LAB_TEST_TO_TUBE : "via"
     V_P_LAB_TEST_TO_TUBE }o--|| V_P_LAB_TUBE : "links to"
-    V_P_LAB_TUBE ||--o{ V_P_LAB_TUBE : "aliquot parent"
 
     V_P_LAB_PATIENT {
         NUMBER AA_ID PK
@@ -89,7 +88,7 @@ erDiagram
         NUMBER AA_ID PK
         NUMBER ORDER_AA_ID FK
         NUMBER SPECIMEN_AA_ID FK
-        NUMBER PARENT_TUBE_AA_ID FK
+        NUMBER PARENT_TUBE_AA_ID FK "self-ref aliquot"
         VARCHAR TUBE_TYPE
         DATE RECEIPT_DT
     }
@@ -124,10 +123,10 @@ erDiagram
 
 ```mermaid
 erDiagram
-    V_P_LAB_CANCELLATION }o..o| V_P_LAB_ORDERED_TEST : "test-level cancel"
-    V_P_LAB_CANCELLATION }o..o| V_P_LAB_TEST_RESULT : "result-level cancel"
-    V_P_LAB_CANCELLATION }o..o| V_P_LAB_SPECIMEN : "specimen-level cancel"
-    V_P_LAB_CANCELLATION }o..o| V_P_LAB_ORDERING_PATTERN : "standing-order cancel"
+    V_P_LAB_CANCELLATION }o--o| V_P_LAB_ORDERED_TEST : "test-level cancel"
+    V_P_LAB_CANCELLATION }o--o| V_P_LAB_TEST_RESULT : "result-level cancel"
+    V_P_LAB_CANCELLATION }o--o| V_P_LAB_SPECIMEN : "specimen-level cancel"
+    V_P_LAB_CANCELLATION }o--o| V_P_LAB_ORDERING_PATTERN : "standing-order cancel"
 
     V_P_LAB_CANCELLATION {
         NUMBER AA_ID PK
@@ -335,9 +334,9 @@ How a single patient encounter spans Lab, Blood Bank, and AR via shared identifi
 
 ```mermaid
 erDiagram
-    V_P_LAB_ORDER ||--o| V_P_BB_BB_Order : "ORDER.ID = ORDERNO"
-    V_P_LAB_ORDER ||--o| V_P_ARE_VISIT : "ORDER.ID = VTORGORDNUM"
-    V_P_LAB_ORDERED_TEST ||--o| V_P_BB_BB_Order : "OT.ORDER_NO = ORDERNO"
+    V_P_LAB_ORDER ||--o{ V_P_BB_BB_Order : "ORDER.ID = ORDERNO"
+    V_P_LAB_ORDER ||--o{ V_P_ARE_VISIT : "ORDER.ID = VTORGORDNUM"
+    V_P_LAB_ORDERED_TEST ||--o{ V_P_BB_BB_Order : "OT.ORDER_NO = ORDERNO"
     V_P_LAB_STAY ||--o{ V_P_LAB_MISCEL_INFO : "STAY.BILLING = OWNER_ID"
 
     V_P_LAB_STAY {
