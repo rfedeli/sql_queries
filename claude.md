@@ -329,23 +329,130 @@ The numeric / DATE triple pattern (same as V_P_LAB_TUBE, V_P_LAB_CANCELLATION):
 
 ### V_P_LAB_ORDERED_TEST — Ordered test data
 
+**75 columns total** — grouped here by category. Volume: ~13K rows/day, ~2 orderables per order. The orderable-test layer between `V_P_LAB_ORDER` and `V_P_LAB_TEST_RESULT` (each row = one orderable group test placed on the order).
+
+#### Identity & Joins
+
 | Column | Type | Description |
 |--------|------|-------------|
-| AA_ID | NUMBER 14 | PK |
-| ORDER_AA_ID | NUMBER 14 | FK → V_P_LAB_ORDER.AA_ID |
-| TEST_ID | VARCHAR2 5 | Test code (FK by code → V_S_LAB_TEST_GROUP.ID) |
+| AA_ID | NUMBER 22 | PK (NOT NULL) |
+| ORDER_AA_ID | NUMBER 22 | FK → V_P_LAB_ORDER.AA_ID |
 | ORDER_NO | VARCHAR2 11 | Order number (matches V_P_BB_BB_Order.ORDERNO) |
-| ORDERING_DT | DATE | Ordering date/time |
-| WORKSTATION_ID | VARCHAR2 5 | Ordering workstation (FK by code → V_S_LAB_WORKSTATION.ID) |
-| CANCELLED_FLAG | NUMBER | Canceled flag (0 = active) |
-| TECH_ID | VARCHAR2 16 | Technologist (FK by code → V_S_LAB_PHLEBOTOMIST.ID) |
+| TEST_ID | VARCHAR2 5 | Test code (FK by code → V_S_LAB_TEST_GROUP.ID) |
+| TEST_TYPE | CHAR 1 | Test classification: `G` = group/panel, `I` = individual |
+| COUNTER | NUMBER 22 | Iteration counter for cycling/standing orders (1 = first/only) |
+| OPARENT_ORDER | VARCHAR2 11 | Parent order number for cycling/standing-order children. Empty for routine orders |
+| ORDER_SORT | NUMBER 22 | Display position within the parent order |
+| SECONDARY_ID | VARCHAR2 40 | Secondary identifier |
+| LOINC_CODE | VARCHAR2 40 | LOINC code (denormalized; useful for HL7/ELR) |
+| TEST_NAME | VARCHAR2 59 | Test name (denormalized — skip V_S_LAB_TEST_GROUP join when only displaying) |
+| REPORTED_TEST_NAME | VARCHAR2 30 | Display name for the test on reports |
+
+#### Cross-System Test Mappings
+
+| Column | Type | Description |
+|--------|------|-------------|
+| REFERENCE_TEST_ID | VARCHAR2 40 | Reference-lab's test code (when test is sent out) |
+| CLIENT_TEST_ID | VARCHAR2 15 | Client/customer test code mapping |
+| BBANK_TEST_ID | VARCHAR2 5 | Blood-bank test code (cross-link to SoftBank) |
+| HIS_DEPARTMENT_ID | VARCHAR2 5 | HIS source department code |
+
+#### Dates & Times (numeric/DATE triple pattern; `-1` is the "not set" sentinel)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| ORDERING_DATE / ORDERING_TIME / ORDERING_DT | NUMBER / NUMBER / DATE | Order placement timestamp — prefer `ORDERING_DT` |
+| COLLECTED_DATE / COLLECTED_TIME / COLLECTED_DT | NUMBER / NUMBER / DATE | Collection timestamp — prefer `COLLECTED_DT` |
+| RECEIVED_DATE / RECEIVED_TIME / RECEIVED_DT | NUMBER / NUMBER / DATE | First-received timestamp — prefer `RECEIVED_DT` |
+| RECEIPT_DATE / RECEIPT_TIME / RECEIPT_DT | NUMBER / NUMBER / DATE | Receipt-confirmation timestamp — usually duplicates `RECEIVED_*`, but can diverge for auto-verified flows (different `RECEIPT_TECH`) |
+| TAT | NUMBER 22 | **EXPECTED TAT (SLA target) from test setup, NOT measured TAT.** Same foot-gun as on V_P_LAB_TEST_RESULT — compute measured TAT from date arithmetic |
+
+#### People
+
+| Column | Type | Description |
+|--------|------|-------------|
+| TECH_ID | VARCHAR2 16 | Ordering technologist (FK by code → V_S_LAB_PHLEBOTOMIST.ID). Holds system codes like `'RBS'` (Rules-Based System) for auto-reflexed orderables |
 | SIGNING_DOCTOR_ID | VARCHAR2 15 | Authorizing doctor (FK by code → V_S_LAB_DOCTOR.ID) |
 | DOCTOR_ID | VARCHAR2 15 | Requesting doctor (FK by code → V_S_LAB_DOCTOR.ID) |
-| MEDICAL_SERVICE_ID | VARCHAR2 5 | Medical service (FK by code → V_S_LAB_MEDICAL_SERVICE.ID) |
-| CLINIC_ID | VARCHAR2 15 | Ordering ward (FK by code → V_S_LAB_CLINIC.ID) |
-| PRIORITY | CHAR 1 | Ordering priority |
-| TRIAGE_STATUS | VARCHAR2 40 | Triage status |
-| BILL_TYPE | NUMBER 5 | Billing type (0=none, 1=Bill Only, 3=No Charge) |
+| REPORTING_DOCTOR1_ID / REPORTING_DOCTOR2_ID / REPORTING_DOCTOR3_ID / REPORTING_DOCTOR4_ID | VARCHAR2 15 | Up to four reporting doctors (FK by code → V_S_LAB_DOCTOR.ID). Empty for routine orderables |
+| REPORTING_DOC_TYPE | VARCHAR2 4000 | Reporting-doctor type metadata (parallel to the 4 ID slots) |
+| COLLECTED_TECH | VARCHAR2 16 | Collecting tech (FK by code → V_S_LAB_PHLEBOTOMIST.ID) |
+| RECEIVED_TECH | VARCHAR2 16 | Receiving tech — first-receipt user |
+| RECEIPT_TECH | VARCHAR2 16 | Receipt-confirmation tech — usually matches `RECEIVED_TECH`; can be `AUTOV` (auto-verifier) for system-driven flows |
+| REFLEXED_BY | VARCHAR2 5 | Source test code that triggered the reflex (when this is a reflex orderable) |
+| REFLEXED_BY_SEQ | NUMBER 22 | Sequence position in the reflex chain |
+
+#### Workstations & Locations
+
+| Column | Type | Description |
+|--------|------|-------------|
+| WORKSTATION_ID | VARCHAR2 5 | Ordering workstation (FK by code → V_S_LAB_WORKSTATION.ID) |
+| CLINIC_ID | VARCHAR2 15 | Ordering ward/clinic (FK by code → V_S_LAB_CLINIC.ID) |
+| MEDICAL_SERVICE_ID | VARCHAR2 5 | Medical service (FK by code → V_S_LAB_MEDICAL_SERVICE.ID). **Often empty in samples — `ORDERING_SERVICE_ID` carries the live data instead** |
+| ORDERING_SERVICE_ID | VARCHAR2 15 | Ordering service identifier — values like `LAB`, `HIS.POCT`. Workhorse field; populated where `MEDICAL_SERVICE_ID` is blank |
+| COLLECTION_CENTER_ID | VARCHAR2 11 | Collection center (FK by code → V_S_LAB_COLL_CENTER.ID; denormalized from V_P_LAB_ORDER) |
+| TEST_LOCATION | VARCHAR2 4 | Performing facility code (e.g., `TUH`, `JNS`, `CH`) |
+| COLLECTION_LOCATION | VARCHAR2 11 | Collection-event location code |
+| RECEIPT_LOCATION | VARCHAR2 11 | Receipt-event location code |
+
+#### Priority & Triage
+
+| Column | Type | Description |
+|--------|------|-------------|
+| PRIORIY | CHAR 1 | **Priority (TYPO — schema-preserved misspelling).** Populated and matches `PRIORITY`. Pick one |
+| PRIORITY | CHAR 1 | Priority — values: `R` (Routine, ~67%), `S` (Stat, ~25%), `T` (Timed, ~8.6%), `U` (~0.001% — undocumented value, ignore unless you specifically need it) |
+| TRIAGE_STATUS | VARCHAR2 40 | **Empty in all 91K rows over 7 days — fully vestigial in current operations.** Don't filter on it |
+
+#### Cancellation, Reflex, and State Flags
+
+| Column | Type | Description |
+|--------|------|-------------|
+| CANCELLED_FLAG | NUMBER 22 | Canceled flag — pure 0/1 binary (0 = active ~92%, 1 = cancelled ~8%). The orderable-level cancellation rate; cancellations cascade to ~6 component result rows each, which is why V_P_LAB_TEST_RESULT shows ~50% Canceled state |
+| REDUNDANT_FLAG | NUMBER 22 | Redundant orderable flag |
+| ABSORBED_FLAG | NUMBER 22 | Test absorbed into another orderable |
+| REFLEXED_FLAG | NUMBER 22 | This orderable was generated by reflex (1 = yes) |
+| IS_REFLEXED | NUMBER 22 | Reflex indicator (parallel to REFLEXED_FLAG; set together) |
+| IS_OADDON | NUMBER 22 | Outpatient add-on indicator |
+| FOREIGN_BBANK_FLAG | NUMBER 22 | Foreign blood-bank product flag |
+| FOREIGN_BBANK_UNITS | NUMBER 22 | Foreign blood-bank unit count |
+| ELR_REPORTABLE | VARCHAR2 1 | ELR-reportable flag (Y/N) |
+| DO_NOT_SEND_TO_HIS | VARCHAR2 1 | HIS suppression flag — set Y on billing-shell orderables (e.g., U/A Billable Test) |
+| PRINT_AS_ORDERED | NUMBER 22 | Print-as-ordered flag — 1 for primary orders, 0 for reflex-generated |
+
+#### Reflex Detail (the rich reflex-tracking chain)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| REFLEX_RULE_ID | VARCHAR2 5 | Reflex rule that triggered this orderable (FK to RBS rule setup) |
+| RFLX_COMPONENT | VARCHAR2 5 | Source component test that triggered the reflex (e.g., `UBLD` for blood reflex on UA) |
+| RFLX_COMP_RES | VARCHAR2 40 | Result value of the source component (e.g., `'Negative'`) |
+| RFLX_COMP_LOINC | VARCHAR2 40 | LOINC code of the source component |
+| RFLX_RESULT | VARCHAR2 40 | Propagated result value |
+| RFLX_RESULT_LOINC | VARCHAR2 40 | Propagated result LOINC |
+| RES_HANDLING | VARCHAR2 5 | Result handling code |
+| RESULT_HANDLING | VARCHAR2 5 | **Duplicate of RES_HANDLING** (legacy column; values match in samples) |
+| REFLEX_ORDER | VARCHAR2 11 | Source order# that triggered the reflex (often empty in routine reflex flows — value is back-derivable via REFLEXED_BY + ORDER_AA_ID linkage) |
+
+#### Billing & Add-on
+
+| Column | Type | Description |
+|--------|------|-------------|
+| BILL_TYPE | NUMBER 22 | Billing type code. Dict says `0=none, 1=Bill Only, 3=No Charge` — but **only `0` appears in 7-day data (100% of rows)**. Codes 1/3 are documented but rare/unused. Treat as effectively constant |
+| ADDON_REASON | VARCHAR2 240 | Free-text reason for add-on tests. PHI-adjacent if populated |
+
+**Notes:**
+
+- **Volume**: ~13K rows/day, ~2 orderables per order. Cross-checks with V_P_LAB_ORDER (~6.4K orders/day × 2 = ~13K orderables) and V_P_LAB_TEST_RESULT (~13K orderables × ~12 components = ~162K result rows).
+- **`PRIORIY` and `PRIORITY` are TRUE duplicates** — both populated, both match. The misspelled column survives from a schema-rename that kept the original. Pick `PRIORITY` for new queries.
+- **`RECEIVED_*` and `RECEIPT_*` are *near-duplicates*** but can diverge — `RECEIVED_TECH=SCC` with `RECEIPT_TECH=AUTOV` was observed for auto-verified POC results. Use `RECEIVED_DT` for "specimen first received" workflows; `RECEIPT_DT` is essentially the same timestamp with a confirmation step layered on.
+- **`-1` is the "not set" sentinel** for the numeric `*_DATE`/`*_TIME` columns when the corresponding event hasn't happened yet (`COLLECTED_DATE=-1` for not-yet-collected). The DATE column is NULL in those cases. Predicates filtering by date should not need to handle `-1` if they use the `*_DT` column.
+- **`MEDICAL_SERVICE_ID` is often empty; `ORDERING_SERVICE_ID` is the live workhorse** for "what service ordered this" — values like `LAB`, `HIS.POCT`. Emphasize `ORDERING_SERVICE_ID` in queries.
+- **`TAT` column = expected SLA, not measured** — same foot-gun as V_P_LAB_TEST_RESULT.
+- **`BILL_TYPE` is effectively always 0** — the documented `1` (Bill Only) and `3` (No Charge) values exist in schema but didn't appear in 7-day data.
+- **`PRIORITY = 'U'` exists** as a rare value (1 row in 7 days) — undocumented in SCC dictionaries. Negligible volume but a known gap if filtering on `PRIORITY IN ('S','R','T')`.
+- **`TRIAGE_STATUS` is fully vestigial** in current operations (empty in all rows).
+- **Reflex tracking is rich** — `IS_REFLEXED=1` rows carry source rule, source component code, source component LOINC, and source component result. Useful for reflex-policy auditing.
+- **Auto-RBS as the actor**: `TECH_ID='RBS'` on auto-reflexed rows; `TECH_ID='SCC'` on HIS-imported orderables. Don't expect a person ID for these.
 
 ### V_P_LAB_TEST_RESULT — Test result data
 
