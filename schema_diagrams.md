@@ -10,6 +10,12 @@ Each diagram shows **PK + FK + key filter columns only** — for full column det
 3. [SoftAR Billing Module](#3-softar-billing-module)
 4. [Blood Bank Module (SoftBank)](#4-blood-bank-module-softbank)
 5. [Cross-Module Bridges (Lab ↔ BB ↔ AR)](#5-cross-module-bridges)
+6. [SoftLab Test Setup / Compendium Hierarchy](#6-softlab-test-setup--compendium-hierarchy)
+7. [Specimen Tracking (SPTR) Cluster](#7-specimen-tracking-sptr-cluster)
+8. [Order Decorator Reference Graph](#8-order-decorator-reference-graph)
+9. [Microbiology (SoftMic) Cluster — preliminary](#9-microbiology-softmic-cluster--preliminary)
+10. [Instrument Interface Map](#10-instrument-interface-map)
+11. [Order Lifecycle Timeline](#11-order-lifecycle-timeline)
 
 ---
 
@@ -405,6 +411,430 @@ erDiagram
 - **One Epic CSN can produce multiple lab orders** (each with its own `V_P_LAB_ORDER.ID`); each lab order maps 1:1 to at most one BB order and 1:1 to at most one AR visit
 - **Same `BILLING` value lives on both `STAY` and `ORDER`** — same identifier, denormalized for query convenience. Querying for CSN context can stop at either level
 - **Lab ↔ BB cross-link only fires for `ORDER_TYPE='P'`** — ~80% of BB orders link back to a SoftLab order (patient-context). The other ~20% are inventory orders (`ORDER_TYPE='I'`: donor processing, unit operations, QC) with no Lab counterpart. INNER JOIN on ORDERNO silently drops the inventory side; use LEFT JOIN or filter `ORDER_TYPE` explicitly
+
+---
+
+## 6. SoftLab Test Setup / Compendium Hierarchy
+
+The configuration tables that drive what tests can be ordered, what tubes they require, and where they're performed. Read top-down: a `TEST_GROUP` (orderable like `CMP`) is composed of `TEST` components (Na, K, Cl…); each side carries its own specimen-requirement and workstation-mapping tables.
+
+```mermaid
+erDiagram
+    V_S_LAB_TEST_GROUP ||--o{ V_S_LAB_TEST_COMPONENT : "has components"
+    V_S_LAB_TEST ||--o{ V_S_LAB_TEST_COMPONENT : "appears as"
+    V_S_LAB_TEST_GROUP ||--o{ V_S_LAB_TEST_GROUP_SPECIMEN : "tube requirements"
+    V_S_LAB_TEST_GROUP_SPECIMEN }o--|| V_S_LAB_SPECIMEN : "SAMPLE_TYPE"
+    V_S_LAB_TEST ||--o{ V_S_LAB_TEST_SPECIMEN : "per workstation tube"
+    V_S_LAB_TEST_SPECIMEN }o--|| V_S_LAB_SPECIMEN : "COLLECTION_CONTAINER"
+    V_S_LAB_SPECIMEN ||--o{ V_S_LAB_TUBE_CAPACITY : "capacity specs"
+    V_S_LAB_TEST ||--o{ V_S_LAB_TEST_ENVIRONMENT : "performed at"
+    V_S_LAB_TEST_ENVIRONMENT }o--|| V_S_LAB_WORKSTATION : "WORKSTATION_ID"
+    V_S_LAB_WORKSTATION }o--|| V_S_LAB_DEPARTMENT : "DEPARTMENT_ID"
+    V_S_LAB_WORKSTATION }o--|| V_S_LAB_LOCATION : "LOCATION_ID"
+    V_S_LAB_DEPARTMENT }o--|| V_S_LAB_LOCATION : "LOCATION_ID"
+
+    V_S_LAB_TEST_GROUP {
+        NUMBER AA_ID PK
+        VARCHAR ID "orderable code matches OT.TEST_ID"
+        VARCHAR GTNAME_UPPER
+        NUMBER TEST_COUNT "may be 0 even with components"
+        VARCHAR FL_LAST_LEVEL "Y leaf"
+        VARCHAR ACTIVE
+    }
+    V_S_LAB_TEST_COMPONENT {
+        NUMBER AA_ID PK
+        NUMBER TEST_AA_ID FK "to TEST_GROUP.AA_ID"
+        VARCHAR COMPONENT FK "to TEST.ID by code"
+        NUMBER TEST_SORT
+    }
+    V_S_LAB_TEST {
+        NUMBER AA_ID PK
+        VARCHAR ID "component code matches TR.TEST_ID"
+        VARCHAR NAME
+        VARCHAR LOINC
+        VARCHAR WORKSTATION_ID "default"
+        VARCHAR DEPARTMENT_ID "default"
+        NUMBER TAT_STAT "SLA target stat"
+        NUMBER TAT_URGENT
+        NUMBER TAT_TIMED
+        VARCHAR FL_NOT_IN_TAT_CALC "Y exclude"
+        VARCHAR ACTIVE
+    }
+    V_S_LAB_TEST_GROUP_SPECIMEN {
+        NUMBER AA_ID PK
+        NUMBER TEST_AA_ID FK "to TEST_GROUP.AA_ID"
+        VARCHAR SAMPLE_TYPE FK "to SPECIMEN.ID by code"
+        NUMBER NUMBER_OF_SAMPLES
+        NUMBER SHIPPING_VOLUME
+        VARCHAR UNITS
+    }
+    V_S_LAB_TEST_SPECIMEN {
+        NUMBER AA_ID PK
+        NUMBER TEST_AA_ID FK "to TEST.AA_ID"
+        VARCHAR WORKSTATION_ID "container varies by ws"
+        VARCHAR COLLECTION_CONTAINER FK "to SPECIMEN.ID by code"
+        NUMBER VOLUME
+        NUMBER EXTRA_TUBES
+    }
+    V_S_LAB_SPECIMEN {
+        NUMBER AA_ID PK
+        VARCHAR ID "tube type code"
+        VARCHAR NAME "Gold SST Purple EDTA etc"
+        VARCHAR DRAW_TYPE
+        VARCHAR CATEGORY
+    }
+    V_S_LAB_TUBE_CAPACITY {
+        NUMBER AA_ID PK
+        VARCHAR SPECIMEN_ID FK "to SPECIMEN.ID by code"
+        NUMBER CAPACITY
+        NUMBER MIN_VOLUME
+    }
+    V_S_LAB_TEST_ENVIRONMENT {
+        NUMBER AA_ID PK
+        VARCHAR TEST_ID FK "to TEST.ID by code"
+        VARCHAR WORKSTATION_ID FK "to WORKSTATION.ID by code"
+        VARCHAR ENVIRONMENT
+    }
+    V_S_LAB_WORKSTATION {
+        NUMBER AA_ID PK
+        VARCHAR ID
+        VARCHAR NAME
+        VARCHAR DEPARTMENT_ID FK
+        VARCHAR LOCATION_ID FK
+        NUMBER REF_LAB "1 = ref lab workstation"
+    }
+    V_S_LAB_DEPARTMENT {
+        NUMBER AA_ID PK
+        VARCHAR ID "TCHEM JCHEM etc"
+        VARCHAR NAME "CHEMISTRY HEMATOLOGY etc"
+        VARCHAR LOCATION_ID FK
+    }
+    V_S_LAB_LOCATION {
+        NUMBER AA_ID PK
+        VARCHAR ID "TUH JNS FC etc"
+        VARCHAR NAME
+        VARCHAR SITE
+        VARCHAR CLIA
+        NUMBER REF_LAB "1 = external ref lab"
+        NUMBER REF_NOTINTERFACED "1 = not interfaced"
+    }
+```
+
+**Operational notes**
+- **Two-tier test model**: `TEST_GROUP` is what gets *ordered* (e.g., `CMP`); `TEST` is what gets *resulted* (component analytes). The bridge is `V_S_LAB_TEST_COMPONENT`. `V_P_LAB_ORDERED_TEST.TEST_ID` matches `TEST_GROUP.ID`; `V_P_LAB_TEST_RESULT.TEST_ID` matches `TEST.ID` (with `GROUP_TEST_ID` carrying the parent).
+- **Specimen requirements live on TWO tables** with different granularity:
+  - `V_S_LAB_TEST_GROUP_SPECIMEN` — at the **orderable** level, lists all tubes needed for the panel as a whole
+  - `V_S_LAB_TEST_SPECIMEN` — at the **test + workstation** level, lets one component require different containers at different sites (e.g., PTSEC uses BLUE most places but BLUPLAS at TCOAG)
+- **Use `TEST_GROUP_SPECIMEN` first; fall back to `TEST_SPECIMEN`** when a group has no rows in the group-level table — common for individual-orderable tests where the only spec is at the component level.
+- **Tube name lookup** always goes through `V_S_LAB_SPECIMEN` (ID → NAME). `V_S_LAB_TUBE_CAPACITY` is for capacity / min-volume specs only — not a name lookup.
+- **`TEST_ENVIRONMENT` is a many-to-many bridge** — a single test can be performed at multiple workstations across facilities. Used to answer "which labs perform test X" by chaining `TEST_ENVIRONMENT.WORKSTATION_ID → V_S_LAB_WORKSTATION.LOCATION_ID → V_S_LAB_LOCATION.SITE`.
+- **Ref-lab tests are identified two ways**: `V_S_LAB_LOCATION.REF_LAB = 1` (external lab as a location) and `V_S_LAB_WORKSTATION.REF_LAB = 1` (the workstation that represents the send-out destination). Filter `REF_NOTINTERFACED = 1` to find non-interfaced (paper-result) ref labs.
+- **TAT columns on `V_S_LAB_TEST` are SLA targets** (`TAT_STAT`, `TAT_URGENT`, `TAT_TIMED`) — not measured TAT. Same foot-gun as on the transactional `tr.TAT`. Always compute measured TAT from date arithmetic.
+- **`FL_NOT_IN_TAT_CALC = 'Y'` excludes a test from TAT reports** — important filter for measured-TAT analytics so configuration-excluded tests don't skew aggregates.
+- **CPT codes are NOT here** — `V_S_LAB_TEST.CPT_BASIC_CODE_1..8` columns are unpopulated in this deployment. Use `V_S_ARE_BILLRULES.BRCPTCODE` (joined via `BRTSTCODE = V_S_LAB_TEST.ID`) for authoritative CPT.
+
+---
+
+## 7. Specimen Tracking (SPTR) Cluster
+
+The configuration that drives the per-terminal Specimen Tracking screens, plus the runtime events recorded in `V_P_LAB_TUBE_LOCATION`. Used for diagnosing "broken terminal" support tickets where one PC sees different SPTR options than another at the same site.
+
+```mermaid
+erDiagram
+    V_S_LAB_COLL_CENTER ||--o{ V_S_LAB_TERMINAL : "has terminals"
+    V_S_LAB_COLL_CENTER ||--o{ V_S_LAB_SPTR_SETUP : "OL/CC scoped"
+    V_S_LAB_TERMINAL ||--o{ V_S_LAB_SPTR_SETUP : "device-specific"
+    V_S_LAB_SPTR_SETUP }o--|| V_S_LAB_SPTR_STOP : "PLACE"
+    V_S_LAB_SPTR_STOP }o--|| V_S_LAB_SPTR_STATUS : "SPECIMEN_STATUS"
+    V_S_LAB_SPTR_STOP }o--|| V_S_LAB_SPTR_LOCATION : "SPECIMEN_LOCATION"
+    V_P_LAB_TUBE ||--o{ V_P_LAB_TUBE_LOCATION : "tracking events"
+
+    V_S_LAB_COLL_CENTER {
+        NUMBER AA_ID PK
+        VARCHAR ID "T1 J1 F1 TREM QUEST etc"
+        VARCHAR SITE "TEMPLE JEANES etc"
+    }
+    V_S_LAB_TERMINAL {
+        NUMBER AA_ID PK
+        VARCHAR COLL_CENTER_ID FK
+        VARCHAR TERMINAL "device id"
+        VARCHAR NAME "long device description"
+    }
+    V_S_LAB_SPTR_SETUP {
+        NUMBER AA_ID PK
+        VARCHAR TERMINAL "polymorphic 3 modes"
+        VARCHAR PLACE FK
+        VARCHAR LOC_DEPT_WRKSTN
+        VARCHAR STATUS
+        VARCHAR ACTIONS
+        VARCHAR HIDE "Y N"
+        NUMBER SETUP_OPTION
+    }
+    V_S_LAB_SPTR_STOP {
+        NUMBER AA_ID PK
+        VARCHAR PLACE "stop identifier"
+        VARCHAR DESCRIPTION
+        VARCHAR SPECIMEN_STATUS FK
+        VARCHAR SPECIMEN_LOCATION FK
+        VARCHAR NEXT_PLACE "self-ref next stop"
+        VARCHAR NEXT_STATUS
+        VARCHAR NEXT_LOCATION
+        VARCHAR TIME_LIMIT
+    }
+    V_S_LAB_SPTR_STATUS {
+        NUMBER AA_ID PK
+        VARCHAR CODE
+        VARCHAR DESCRIPTION
+    }
+    V_S_LAB_SPTR_LOCATION {
+        NUMBER AA_ID PK
+        VARCHAR CODE "single char"
+        VARCHAR DESCRIPTION
+    }
+    V_P_LAB_TUBE_LOCATION {
+        NUMBER AA_ID PK
+        NUMBER TUBE_AA_ID FK
+        VARCHAR STATUS_DESCRIPTION "Collected Transit etc"
+        DATE ARRIVED_DT
+        VARCHAR REGISTERED_BY
+        VARCHAR DEPOT
+        VARCHAR TRAY_ID
+        VARCHAR CARRIER_ID
+    }
+```
+
+**Operational notes**
+- **`V_S_LAB_SPTR_SETUP.TERMINAL` is polymorphic — three modes:**
+  1. A specific device ID → `V_S_LAB_TERMINAL.TERMINAL` (device-specific override; rare in practice)
+  2. An OL/CC code → `V_S_LAB_COLL_CENTER.ID` (e.g., `T1`, `J1`, `F1`, `TREM`, `QUEST` — most rows live here)
+  3. Literal `*` → globally-scoped fallback
+  Resolution: a device inherits its OL/CC rows + global rows + any device-specific overrides. Device-specific rows take precedence.
+- **`V_S_LAB_SPTR_STOP` self-references via `NEXT_PLACE` / `NEXT_STATUS` / `NEXT_LOCATION`** — defines the workflow chain (where a specimen goes after this stop). Not drawn on the diagram (renderer doesn't support self-refs cleanly); resolve manually with `b.PLACE = a.NEXT_PLACE`.
+- **Diagnostic workflow for "broken terminal" tickets** (per SCC manual):
+  1. Get the PC's terminal ID from SoftLab client (Help → About) — not stored in the DB.
+  2. `V_S_LAB_TERMINAL` — confirm registered with the right `COLL_CENTER_ID`.
+  3. `V_S_LAB_SPTR_SETUP WHERE TERMINAL = <device id>` — device-specific rows (often empty).
+  4. `V_S_LAB_SPTR_SETUP WHERE TERMINAL = <coll_center_id>` — OL/CC-inherited rows.
+  5. `V_S_LAB_SPTR_SETUP WHERE TERMINAL = '*'` — global rows.
+  6. If two PCs share `COLL_CENTER_ID` and neither has device-specific rows, SPTR config is identical — the problem is outside SCC (client INI, hostname mis-registration, printer drivers, etc.).
+- **`V_P_LAB_TUBE_LOCATION` is the runtime event log** — one row per tracking event (`Collected`, `Transit`, `Run on Instrument`, `Resulted`, `Ordering`). Filter `STATUS_DESCRIPTION = 'Transit'` to find specimens physically moved between facilities.
+- **`TRAY_ID` / `CARRIER_ID` / `LINE_CODE` / `OUTLET_CODE`** are populated for automation-line events (Roche/Beckman track-routed specimens) — useful for instrument-routing audits.
+
+---
+
+## 8. Order Decorator Reference Graph
+
+The lookup tables that resolve the `*_ID` code columns on `V_P_LAB_ORDER`. Each edge is a join-by-code (the order column holds the code value, the lookup view's `ID` column is the match target).
+
+```mermaid
+erDiagram
+    V_P_LAB_ORDER }o--|| V_S_LAB_CLINIC : "ORDERING_CLINIC_ID"
+    V_P_LAB_ORDER }o--|| V_S_LAB_COLL_CENTER : "COLLECT_CENTER_ID"
+    V_P_LAB_ORDER }o--|| V_S_LAB_DOCTOR : "REQUESTING_DOCTOR_ID"
+    V_P_LAB_ORDER }o--|| V_S_LAB_PHLEBOTOMIST : "ORDERING_TECH_ID"
+    V_P_LAB_ORDER }o--|| V_S_LAB_INSURANCE : "INSURANCE1/2/3 + FAILED_PAYOR"
+    V_P_LAB_ORDER }o--|| V_S_LAB_STUDY : "STUDY_ID"
+    V_S_LAB_CLINIC }o--|| V_S_LAB_COLL_CENTER : "ORD_LOCATION_ID"
+    V_S_LAB_CLINIC }o--|| V_S_LAB_DOCTOR : "house DOCTOR_ID"
+    V_S_LAB_DOCTOR }o--|| V_S_LAB_CLINIC : "main CLINIC_ID"
+
+    V_P_LAB_ORDER {
+        NUMBER AA_ID PK
+        VARCHAR ID "Order#"
+        VARCHAR ORDERING_CLINIC_ID FK
+        VARCHAR COLLECT_CENTER_ID FK
+        VARCHAR REQUESTING_DOCTOR_ID FK
+        VARCHAR ORDERING_TECH_ID FK
+        VARCHAR INSURANCE1_ID FK
+        VARCHAR INSURANCE2_ID FK
+        VARCHAR INSURANCE3_ID FK
+        VARCHAR FAILED_PAYOR FK
+        VARCHAR STUDY_ID FK
+    }
+    V_S_LAB_CLINIC {
+        VARCHAR ID PK "by code"
+        VARCHAR NAME
+        VARCHAR ORD_LOCATION_ID FK "authoritative facility"
+        VARCHAR FACILITY "often blank use ORD_LOCATION_ID"
+        VARCHAR DOCTOR_ID FK "house physician"
+        VARCHAR ACTIVE
+    }
+    V_S_LAB_COLL_CENTER {
+        VARCHAR ID PK "by code T1 J1 etc"
+        VARCHAR SITE "facility grouping"
+    }
+    V_S_LAB_DOCTOR {
+        VARCHAR ID PK "by code"
+        VARCHAR LAST_NAME
+        VARCHAR FIRST_NAME
+        VARCHAR CLINIC_ID FK "main clinic"
+        CHAR TYPE "G I N S T"
+        VARCHAR ACTIVE
+    }
+    V_S_LAB_PHLEBOTOMIST {
+        VARCHAR ID PK "by code"
+        VARCHAR LAST_NAME
+        VARCHAR FIRST_NAME
+        VARCHAR NURSE "Y nurse role"
+        VARCHAR ACTIVE
+    }
+    V_S_LAB_INSURANCE {
+        VARCHAR ID PK "by code"
+    }
+    V_S_LAB_STUDY {
+        VARCHAR ID PK "by code"
+    }
+```
+
+**Operational notes**
+- **All FKs in this graph are by code**, not numeric `AA_ID` — the lookup PKs are `ID` (varchar code) and the order columns hold the matching code value. `JOIN V_S_LAB_DOCTOR d ON d.ID = o.REQUESTING_DOCTOR_ID`.
+- **`V_S_LAB_CLINIC.ORD_LOCATION_ID` is the authoritative facility grouping**, not `FACILITY` (which is often blank). Resolves to `V_S_LAB_COLL_CENTER.ID`.
+- **`V_S_LAB_DOCTOR.TYPE` enum**: `G`=Doctor Group, `I`=Institution, `N`=Non-staff, `S`=Staff, `T`=Temporary.
+- **`V_S_LAB_PHLEBOTOMIST` is a 57-row table** — does NOT cover the full collector workforce. ~9% of active collectors have rows here; most flow through Epic/HIS and bypass the table. Don't treat it as the authoritative collector roster — see the project memories on the three-signal collector classifier.
+- **`V_S_LAB_PHLEBOTOMIST.NURSE = 'Y'` is accurate where populated**, but populated for ~2% of actual collectors. Use as a narrow high-confidence overlay, never as the primary nurse-vs-phleb classifier — for that, prefer `V_P_LAB_SPECIMEN.NURSE_COLL` (HL7 OBR[11]).
+- **Generic phleb codes** in `V_S_LAB_PHLEBOTOMIST.ID`: `PHLEB` (default phlebotomist), `NUR` (nursing-staff), `PHY` (physician), `PAT` (patient), `UNK` (unknown), `SCC` (system testing only). These are role markers, not real users.
+- **`V_P_LAB_STAY` and `V_P_LAB_ORDERED_TEST` carry their own copies of these `*_ID` columns** — same code-FK pattern. The ordered-test layer often has the live data when `V_P_LAB_ORDER`'s column is blank (e.g., `MEDICAL_SERVICE_ID` mostly empty on ORDER, populated as `ORDERING_SERVICE_ID` on ORDERED_TEST).
+
+---
+
+## 9. Microbiology (SoftMic) Cluster — preliminary
+
+> ⚠️ **Preliminary diagram — relationships inferred from view names; not directly verified.** Most MIC FK columns are not yet documented at the column level in the dictionary. Treat this as a starting point for query design; verify joins with discovery probes before relying on them in production reports.
+
+```mermaid
+erDiagram
+    V_P_MIC_ACTIVE_ORDER ||--o{ V_P_MIC_TEST : "has tests"
+    V_P_MIC_TEST ||--o{ V_P_MIC_ISOLATE : "yields isolates"
+    V_P_MIC_ISOLATE ||--o{ V_P_MIC_SENSI : "drug sensitivities"
+    V_P_MIC_TEST ||--o{ V_P_MIC_MEDIA : "plated on"
+    V_P_MIC_TEST ||--o{ V_P_MIC_TESTCOMM : "test comments"
+    V_P_MIC_ISOLATE ||--o{ V_P_MIC_ISOCOMM : "isolate comments"
+    V_P_MIC_SENSI ||--o{ V_P_MIC_THERAPYCOMM : "drug comments"
+    V_P_MIC_MEDIA ||--o{ V_P_MIC_MEDIACOMM : "media comments"
+    V_P_MIC_ISOLATE }o--|| V_S_MIC_ORGANISM : "organism code"
+    V_P_MIC_SENSI }o--|| V_S_MIC_DRUG : "drug code"
+    V_P_MIC_TEST }o--|| V_S_MIC_SOURCE : "source code"
+    V_S_MIC_ORGANISM ||--o{ V_S_MIC_ORGANISM_CLASS : "class links"
+    V_S_MIC_DRUG ||--o{ V_S_MIC_DRUG_CLASS : "class links"
+
+    V_S_MIC_ORGANISM {
+        NUMBER AA_ID PK
+        VARCHAR ID
+        VARCHAR NAME "STAPHYLOCOCCUS AUREUS etc"
+        VARCHAR NAME_SHORT
+        VARCHAR SNOMED
+        CHAR INFECTIOUS_ORG
+        VARCHAR Q_VIRUS "classification flags"
+        VARCHAR R_FUNGI
+        VARCHAR A_GRAMPOS
+        VARCHAR B_GRAMNEG
+        VARCHAR C_GRAMVAR
+        VARCHAR ACTIVE
+    }
+```
+
+**Operational notes (preliminary)**
+- **Verification needed for all FK columns** — the join keys for `V_P_MIC_TEST → V_P_MIC_ACTIVE_ORDER`, `V_P_MIC_ISOLATE → V_P_MIC_TEST`, `V_P_MIC_SENSI → V_P_MIC_ISOLATE`, etc. are inferred from naming conventions, not directly probed. Run a discovery probe before writing production queries.
+- **Organism type is derived from classification flags** on `V_S_MIC_ORGANISM`, not a single TYPE column: `Q_VIRUS` / `O1VIRUS` (virus), `R_FUNGI` (fungus, includes yeasts like Candida), `A_GRAMPOS` / `B_GRAMNEG` / `C_GRAMVAR` (gram stain), `N_COCUS` / `O_BACILLUS` (morphology).
+- **Genus / species are not stored separately** — parse from `V_S_MIC_ORGANISM.NAME` with `REGEXP_SUBSTR` if needed.
+- **Sensitivity panel flags** on `V_S_MIC_ORGANISM` (single-letter columns S, T, U, V, W, X, Y, Z, A1–Z1, etc.) determine which drug panels apply to that organism — schema-heavy but undocumented at column level.
+- **Cross-link to SoftLab**: micro orders share the same `V_P_LAB_ORDER` ancestry as chem/heme orders — micro-flagged orders carry `V_P_LAB_ORDER.BACTITEST = 'Y'`. Component results land in `V_P_LAB_TEST_RESULT` like normal; the MIC views overlay culture / isolate / sensitivity detail on top.
+- **Cancellation fan-out applies to micro tests too** — see diagram #2; `V_P_LAB_CANCELLATION.ORDERED_TEST_AA_ID` covers cancelled cultures.
+
+---
+
+## 10. Instrument Interface Map
+
+How interfaced analyzers (chemistry, hematology, micro, molecular) and HIS infrastructure connect to the SoftLab workstation / department / location hierarchy. Each `V_S_INST_INSTRUMENT` row is a configured driver / interface.
+
+```mermaid
+erDiagram
+    V_S_INST_INSTRUMENT }o--|| V_S_LAB_WORKSTATION : "ORD/RES_WORKSTATION_ID"
+    V_S_LAB_WORKSTATION }o--|| V_S_LAB_DEPARTMENT : "DEPARTMENT_ID"
+    V_S_LAB_WORKSTATION }o--|| V_S_LAB_LOCATION : "LOCATION_ID"
+    V_S_INST_INSTRUMENT ||--o{ V_S_INST_PARAMETERS : "config params"
+    V_S_INST_INSTRUMENT ||--o{ V_S_INST_TRANS_TBL : "field translations"
+    V_S_INST_INSTRUMENT ||--o{ V_S_INST_CONVERSION_TBL : "conversion rules"
+    V_S_INST_INSTRUMENT ||--o{ V_S_INST_ADJUST_TBL : "result adjust rules"
+    V_S_INST_PARAMETERS }o--|| V_S_INST_PARAM_DESC : "param description"
+
+    V_S_INST_INSTRUMENT {
+        NUMBER AA_ID PK
+        VARCHAR ID "TREM TCEPH TALIN etc"
+        VARCHAR NAME "Remisol Cepheid Alinity etc"
+        VARCHAR ACTIVE "Y A N"
+        VARCHAR ORD_WORKSTATION_ID FK "where orders route"
+        VARCHAR RES_WORKSTATION_ID FK "where results post"
+        VARCHAR INSTRUMENT_TYPE "CHEMISTRY HEMATOLOGY MICRO HIS"
+        VARCHAR INSTRUMENT_FLAG "BI_MSG BI_NO_MSQ UNI_LDL etc"
+        VARCHAR LISTN_NAME "GenInst astmGen genref etc"
+        VARCHAR PORT_NAME "tty TCP socket or middleware ref"
+        VARCHAR DIR_NAME "I/TREM I/QUEST I/AUTO etc"
+        VARCHAR LOADL_FILE "dbildl = bidirectional"
+    }
+    V_S_LAB_WORKSTATION {
+        VARCHAR ID PK
+        VARCHAR NAME
+        VARCHAR DEPARTMENT_ID FK
+        VARCHAR LOCATION_ID FK
+        NUMBER REF_LAB
+    }
+```
+
+**Operational notes**
+- **Two workstation FKs from a single instrument row** — `ORD_WORKSTATION_ID` (where orders route for the analyzer) and `RES_WORKSTATION_ID` (where results post). They often match for direct analyzers; they diverge for middleware-routed instruments. Diagram collapses both into one edge for renderer simplicity; both columns are listed in the entity body.
+- **`ACTIVE = 'A'` (not `'Y'`)** for auto-services and server processes (auto-reporting, RBS, label servers, monitoring). Standard active analyzers use `'Y'`. `'N'` = retired / inactive.
+- **`INSTRUMENT_TYPE = 'HIS'` rows are NOT analyzers** — they're system-infrastructure interfaces (ADT, order entry, billing, ESB, auto-reporting, label servers). Filter these out for analyzer-only queries: `WHERE INSTRUMENT_TYPE IN ('CHEMISTRY','HEMATOLOGY','MICROBIOLOGY')`.
+- **Middleware shared-connection pattern**: many physical analyzers route through one logical interface row. Beckman AU / DxC / Access at TUH all flow through `TREM` (Remisol). Same pattern at JNS (`JREM`), Episcopal (`EREM`), Fox Chase (`FREM`), W&F (`WFREM`). Use `PORT_NAME` and `INST_DEP_1` / `INST_DEP_2` to spot middleware dependencies.
+- **Reference-lab interfaces** use `LISTN_NAME = 'genref'` and `DIR_NAME` like `I/QUEST`, `I/TVCOR`, `I/HIST` — separate Quest, Viracor, HistoTrac connections.
+- **`LOADL_FILE = 'dbildl'`** indicates bidirectional download (LIS → instrument). Unidirectional instruments (results-only) have a different `LOADL_FILE` or none.
+- **Date columns are stored as YYYYMMDD NUMBER, not Oracle DATE** — `CREATE_DATE` and `MOD_DATE` need `TO_DATE(TO_CHAR(CREATE_DATE), 'YYYYMMDD')` for date arithmetic.
+- **Satellite tables** (`V_S_INST_PARAMETERS`, `V_S_INST_TRANS_TBL`, `V_S_INST_CONVERSION_TBL`, `V_S_INST_ADJUST_TBL`) hold per-instrument configuration — most query work doesn't touch them.
+
+---
+
+## 11. Order Lifecycle Timeline
+
+How an order's timestamps progress from placement to reported result, and where each `*_DT` column lives. Useful for picking the right column for a given TAT measurement and for spotting where cancellations interrupt the chain.
+
+```mermaid
+flowchart LR
+    O["ORDERED_DT<br/>order placed<br/><i>ORDER, ORDERED_TEST</i>"]
+    C["COLLECT_DT<br/>specimen drawn<br/><i>SPECIMEN.COLLECTION_DT,<br/>ORDERED_TEST, TEST_RESULT</i>"]
+    R["RECEIVE_DT<br/>specimen received<br/><i>TUBE.RECEIPT_DT,<br/>TEST_RESULT.RECEIVE_DT</i>"]
+    T["TEST_DT<br/>instrument ran test<br/><i>TEST_RESULT</i>"]
+    V["VERIFIED_DT<br/>tech signed off<br/>STATE = Final/Corrected<br/><i>TEST_RESULT</i>"]
+    F["F_REPORTED = Y<br/>final report sent<br/><i>ORDER, TEST_RESULT</i>"]
+    X["CANCELLATION_DT<br/>STATE = Canceled<br/><i>V_P_LAB_CANCELLATION</i>"]
+
+    O --> C
+    C --> R
+    R --> T
+    T --> V
+    V --> F
+    O --> X
+    C --> X
+    R --> X
+    T --> X
+    V --> X
+```
+
+**Operational notes**
+- **Standard measured TAT** = `VERIFIED_DT - RECEIVE_DT` (specimen-receipt to result). This is the SLA-relevant interval for most reports; ignore the `tr.TAT` column — that's the *target*, not the measured value.
+- **Other useful intervals:**
+  - `RECEIVE_DT - COLLECT_DT` — specimen-transit time
+  - `TEST_DT - RECEIVE_DT` — wait time at the analyzer
+  - `VERIFIED_DT - TEST_DT` — instrument-run-to-verification
+  - `VERIFIED_DT - ORDERED_DT` — order-to-result (door-to-door)
+- **Each timestamp lives on multiple views** (denormalized for query convenience):
+  - `COLLECT_DT` — canonical on `V_P_LAB_SPECIMEN.COLLECTION_DT`; denormalized to `V_P_LAB_ORDERED_TEST.COLLECTED_DT` and `V_P_LAB_TEST_RESULT.COLLECT_DT`
+  - `RECEIVE_DT` — canonical (per-tube) on `V_P_LAB_TUBE.RECEIPT_DT`; denormalized to `V_P_LAB_ORDERED_TEST.RECEIVED_DT` and `V_P_LAB_TEST_RESULT.RECEIVE_DT`
+  - `VERIFIED_DT` lives only on `V_P_LAB_TEST_RESULT` (no parent-level rollup)
+- **Numeric / DATE triple pattern**: most timestamps have a `*_DATE` (NUMBER, YYYYMMDD), `*_TIME` (NUMBER, HHMM), and `*_DT` (DATE) trio. **Always use the `*_DT` column** — it composes the two and handles the `-1` "not set" sentinel correctly.
+- **`ADMISSION_DT` is NOT in this chain** — it sits on `V_P_LAB_STAY` and can be in the FUTURE (Epic posts pre-scheduled visits up to ~5 months ahead). Don't use it as a "did this happen" filter; use a downstream timestamp like `ORDERED_DT` or `VERIFIED_DT`.
+- **Cancellation can fire at any point** after order placement and before final report. The cancellation row in `V_P_LAB_CANCELLATION` records `CANCELLATION_DT` plus exactly one of four FK columns identifying the level (order / result / specimen / standing-pattern — see diagram #2). State on the relevant test-result rows flips to `Canceled`.
+- **`UNVERIFIED_DT` rolls back from `VERIFIED_DT`** — when a posted result is un-verified for amendment, the `UNVERIFIED_DT` column on `V_P_LAB_TEST_RESULT` records the rollback. The eventual re-verification updates `VERIFIED_DT` again. Useful for amendment-audit reports.
+- **Pre-collection ordering**: orders for not-yet-drawn specimens carry `TO_BE_COLLECT_DT` (`V_P_LAB_PENDING_RESULT`) as the planned collection time — distinct from actual `COLLECT_DT`.
 
 ---
 
