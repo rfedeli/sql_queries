@@ -3217,14 +3217,229 @@ The SoftBank setup namespace uses a `Y_` infix (likely the original SCC SoftBank
 
 ---
 
+## SoftID (IDN) Module — Detail
+
+SoftID is SCC's mobile specimen-ID / barcode-scanning module. Tablets and PCs running the SoftID client log every collector action (login, role select, list pull, patient query, label print, collection upload) into `V_P_IDN_LOG`. Configuration (roles, label formats, sound files, printer models, canned messages) lives in the `V_S_IDN_*` setup views. Module came online ~2019-11-05 (V_S_IDN_DOMAIN earliest record); some role-table records go back to 2013-12-11.
+
+Verified 2026-04-29 via cluster inventory + V_P_IDN_LOG deep probe + lookups probe.
+
+### Cluster topology — 17 views (NOT 18)
+
+`V_LAB_IDN_ROUTE` is listed in older SCC docs but **does not exist in this deployment** — actual count is 17.
+
+```
+V_S_IDN_DOMAIN  (singleton: ONE row, AA_ID=1)
+  ├── V_S_IDN_FOLDER         (FK: DOMAIN_ID  — note name)
+  ├── V_S_IDN_ROLE           (FK: DOMAIN_ID)
+  │     ├── V_S_IDN_ROLE_FOLDER  (FK: ROLE_AA_ID + FOLDER_AA_ID — junction)
+  │     ├── V_S_IDN_ROLE_PARAM   (FK: ROLE_AA_ID — key/value config)
+  │     ├── V_S_IDN_ROLE_ROUTE   (FK: ROLE_AA_ID)
+  │     ├── V_S_IDN_ROLE_TEST    (FK: ROLE_AA_ID — test+workstation)
+  │     └── V_S_IDN_ROLE_TUBE    (FK: ROLE_AA_ID — allowed tube types)
+  └── (5 of 6 DOMAIN_* satellites with FK: DOMAIN_AA_ID — note name)
+        ├── V_S_IDN_DOMAIN_LBLFMT      (label formats)
+        ├── V_S_IDN_DOMAIN_MESSAGE     (system messages)
+        ├── V_S_IDN_DOMAIN_PARAM       (key/value config)
+        ├── V_S_IDN_DOMAIN_PRNMODEL    (printer models)
+        └── V_S_IDN_DOMAIN_SOUND       (audio assets, BLOB)
+
+V_P_IDN_LOG               (event log — single base table LAB_PID_LOG)
+V_S_IDN_ASSIGN            (user-to-role; spans 4 base tables internally:
+                             IDN_ASSIGN ⊕ IDN_ROLE ⊕ SEC_USER ⊕ SEC_USER_EXT)
+V_S_IDN_DEVICE_OPTION     (key/value per device — base column TERMINAL,
+                             view exposes as DEVICE_ID)
+
+V_S_IDN_DOMAIN_CANMSG     ⚠ BROKEN VIEW. See foot-gun below.
+```
+
+**FK naming inconsistency:** the FK to V_S_IDN_DOMAIN is named `DOMAIN_AA_ID` on 5 of 6 DOMAIN_* satellites, but `DOMAIN_ID` (no `_AA` suffix) on V_S_IDN_FOLDER and V_S_IDN_ROLE. Same logical FK, different names.
+
+**Single-domain deployment.** V_S_IDN_DOMAIN holds a single row (`AA_ID=1`). The schema *could* support multi-tenant config but isn't used that way here; all `DOMAIN_AA_ID`/`DOMAIN_ID` FKs point to this one row.
+
+**Sites encoded in role-ID prefix, not stored as a column.** Despite the deployment spanning 7+ physical sites, V_P_IDN_LOG.SITE_ID is **0% populated** across 387K events / 30 days. Site is encoded in the role-ID prefix instead — `TUH*`, `JNS*`, `AOH*`/`FCC*`, `EPH*`, `CHH*`. To filter by site, parse the ROLE_ID prefix.
+
+### V_P_IDN_LOG — SoftID event log
+
+Workhorse table. Volume: ~387K events / 30 days (~12.9K/day). Single base table `LAB_PID_LOG`. View has `with read only` constraint.
+
+| Column | Type | Base Column | Indexed | Description |
+|--------|------|-------------|---------|-------------|
+| AA_ID | NUMBER 14 | AA_ID | ✓ PK | NOT NULL |
+| SITE_ID | VARCHAR2 5 | SITE_ID | — | **VESTIGIAL — 0% populated.** Site is in the role-ID prefix, not here |
+| USER_ID | VARCHAR2 51 | LOGUSER | ✓ | Acting user. 100% populated. **Same namespace as V_S_IDN_ASSIGN.USER_LOGIN_ID** — joinable. Width declared 51 but values cap at 11; 80%+ are 6–8 chars |
+| ROLE_ID | VARCHAR2 15 | LOGROLE | — | Selected role code. **Empty on LoginToSoftID** (1% populated) — login fires before role selection. 99.4% on LogOffFromSoftID. Resolves to V_S_IDN_ROLE.ID |
+| PHLEB_ID | VARCHAR2 51 | LOGTECH | ✓ | Collector identity. Width declared 51 but values cap at 16 (matches V_S_LAB_PHLEBOTOMIST.ID). ~37% are 3-char generic role placeholders (`NUR`, `PHLEB`, etc.); rest are individual codes. 100% populated except 81% on LoginToSoftID |
+| EVENT | VARCHAR2 31 | LOGEVN | — | Event type. 13 distinct values. **Foot-gun: case-inconsistent** — `LogOffFromSoftID` (capital O) vs `LogoffFromSoftID.ADM` (lowercase). Use `UPPER()` for prefix matching |
+| PATIENT_ID | VARCHAR2 23 | LOGPATID | — | Patient MRN. Binary fill — 100% on patient-touch events, 0% otherwise. Format matches Temple `^E[0-9]+$` |
+| SPECIMEN_ID | VARCHAR2 13 | LOGSPECID | — | Specimen barcode. **100% length 11, uniform.** Joinable to `V_P_LAB_SPECIMEN_BARCODE.CODE` where `CODE_TYPE='B'`. Populated only on UploadCollection and LabelPrinted |
+| WARD_ID | VARCHAR2 15 | LOGWARDID | — | Ward code. 100% on collection events; **87% on PatientCollectionQuery, 95% on KeyedPatientCollectionQuery** (partial — pre-arrival/outpatient lookups lack ward); 0% on session/login |
+| DEVICE_ID | VARCHAR2 51 | LOGDEVICE | — | Device identifier. 100% populated. Trimodal length: 19 chars (83%), 21 chars (14%), 23 chars (4%) — three dominant device-ID formats |
+| TERMINAL_ID | VARCHAR2 5 | LOGTERMINAL | — | Terminal/PC code. **100% length 5 uniform**, 100% populated |
+| MESSAGE | VARCHAR2 2048 | LOGNOTE | — | Free-text event detail. 100% populated. PHI-adjacent — may contain patient context, error narrative |
+| LOG_DT_SERVER | DATE | **LOGDT** | — | **NOT INDEXED.** Carries same value as LOG_DT_UTC for 99.9997% of rows. Naming is misleading — this is NOT server processing time; mirrors LOGEVNDT |
+| LOG_DT_UTC | DATE | **LOGEVNDT** | ✓ | **The indexed canonical event timestamp** (UTC). Use this column for date-range filters to hit `LAB_PID_LOG_LOGEVNDT_INDEX` |
+| LOG_DT_DEV | DATE | **LOGEVNDT** | ✓ | **Literal duplicate alias of LOG_DT_UTC** (same base column). NOT a separate device-clock column despite the misleading name |
+| LOG_DT | DATE | computed | ✓ | **Computed**: `LAB.SOFTID_UTC_PKG.idn_utc_date_to_local(LOGEVNDT)` — TZ-shift to local. Indexed via function-based `LAB_PID_LOG_LOGEVNDT_TZ_INDEX`. Use for human-readable local time |
+
+**Notes:**
+
+- **The 4 LOG_DT_* columns expose only 2 distinct base values**: `LOGDT` (LOG_DT_SERVER) and `LOGEVNDT` (LOG_DT_UTC, LOG_DT_DEV, computed-LOG_DT). LOG_DT_DEV is a literal duplicate alias of LOG_DT_UTC despite the misleading name.
+- **For index-friendly date windowing, filter on `LOG_DT_UTC` directly.** `LOG_DT` (the no-suffix one) hits the function-based index but depends on the optimizer recognizing the expression — fragile. `LOG_DT_SERVER` is NOT indexed at all.
+- **Future-dated rows exist**: 1,605/387K (0.4%) carry timestamps in the future (max +6.5 years observed) — devices with bad clocks. Add `<= SYSDATE` guard if filtering, similar to V_P_LAB_STAY.ADMISSION_DT.
+- **`SITE_ID` is fully vestigial** in this deployment — 0% populated across all 13 event types. Site is in the role-ID prefix.
+- **`ROLE_ID` is empty on login events** — filtering by ROLE_ID silently drops all `LoginToSoftID` rows. State machine: login (no role) → RoleSelection (role attached) → activity events → logoff (role still attached).
+- **`PHLEB_ID` is partial only on LoginToSoftID** (81%) but ≥99.96% on every other event type. Don't use PHLEB_ID-presence as a "valid event" filter.
+- **`PATIENT_ID` is binary**: 100% on patient-touch events, 0% on session/login events. No partials.
+- **`SPECIMEN_ID` is even narrower**: only on UploadCollection and LabelPrinted (specimen-touch events). Always uniform 11-char barcode width.
+- **Workhorse cross-view bridges** (verified):
+  - `V_P_IDN_LOG.USER_ID` ↔ `V_S_IDN_ASSIGN.USER_LOGIN_ID` — namespace match verified by length distribution
+  - `V_P_IDN_LOG.ROLE_ID` ↔ `V_S_IDN_ROLE.ID` (denormalized role code, no join needed if you only need the code)
+  - `V_P_IDN_LOG.SPECIMEN_ID` ↔ `V_P_LAB_SPECIMEN_BARCODE.CODE` (CODE_TYPE='B')
+  - `V_P_IDN_LOG.PATIENT_ID` ↔ `V_P_LAB_PATIENT.ID` (MRN format aligned)
+
+#### EVENT enum — 13 distinct values, 30-day data
+
+| Group | Events | Volume | PATIENT_ID | SPECIMEN_ID | WARD_ID | ROLE_ID |
+|-------|--------|--------|------------|-------------|---------|---------|
+| **Specimen-touch** | UploadCollection (27.15%), LabelPrinted (26.03%) | 53% | 100% | 100% | 100% | 100% |
+| **Patient-touch** | PatientCollectionQuery (11.95%), MicroSourceSiteUpdated (1.17%), PatientMismatch (0.08%), SpecimenMismatch (0.06%), KeyedPatientCollectionQuery (0.05%) | 13% | 100% | 0% | 87–100% | 100% |
+| **Session/admin** | RoleSelection (13.21%), CollectionListDownload (13.20%), LoginToSoftID.ADM (0.01%), LogoffFromSoftID.ADM (0.01%) | 27% | 0% | 0% | 0% | 100% |
+| **Bare login/logoff** | LoginToSoftID (4.89%), LogOffFromSoftID (2.19%) | 7% | 0% | 0% | 0% | 1% / 99% |
+
+- **~1:1 ratio** between `LabelPrinted` and `UploadCollection` — one label per specimen, one upload per collection
+- **~1:1 ratio** between `RoleSelection` and `CollectionListDownload` — every role pick triggers a list pull
+- **2.23:1 login-to-logoff ratio** — sessions outnumber clean logoffs by ~2x. Don't use Logoff as proxy for "session ended"
+- **Mismatch events are sparse but real safety/QC signals**: ~18 mismatches/day (PatientMismatch + SpecimenMismatch combined)
+
+### V_S_IDN_DOMAIN — Module config root (singleton)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 14 | PK |
+| SITE_ID | VARCHAR2 5 | NOT NULL but content-wise unused (single domain). NOT the same enum as facility codes elsewhere |
+| LAST_MODIFICATION_DT | DATE | Local-time modified |
+| LAST_MODIFICATION_DT_UTC | DATE | UTC modified. Working as labeled — the local/UTC convention is legitimate here, unlike on V_P_IDN_LOG |
+
+**Notes:**
+- **Singleton in this deployment**: one row only (`AA_ID=1`).
+- `LAST_MODIFICATION_DT_UTC = 2019-11-05` — module came online (or was last reconfigured) at that date.
+- All `V_S_IDN_*` satellites' `DOMAIN_AA_ID`/`DOMAIN_ID` FKs point to this single row.
+
+### V_S_IDN_ROLE — Role definitions
+
+85 distinct roles. `ID` (role code) is the practical key. `NAME` (display name) is **not unique** — see foot-gun below.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 14 | PK |
+| DOMAIN_ID | NUMBER 14 | FK → V_S_IDN_DOMAIN.AA_ID (always = 1 here) |
+| ID | VARCHAR2 15 | NOT NULL. Role code (e.g., `RNBLD`, `TUH7E`, `JNS3C`, `CHH4S`) |
+| NAME | VARCHAR2 63 | Display name. **NOT effectively unique** — see foot-gun below |
+| CREATION_DT_UTC | DATE | Role creation timestamp |
+| LAST_MODIFICATION_DT_UTC | DATE | Last modification |
+| CREATION_DT | DATE | Local-time creation |
+| LAST_MODIFICATION_DT | DATE | Local-time modification |
+
+**Notes:**
+
+- **Foot-gun: ROLE_NAME duplicates exist.** Three roles share `NAME = "TUH Overnight Recovery"` — ROLE_IDs `TUHONOV`, `TUHOVERNGHT`, `TUHOVERNIGHT`. Two roles share `NAME = "RN BLOOD"` — ROLE_IDs `RNBLD` and `RNBLDZ`. The `IDN_ROLE_NAME_DOMAIN_UNIQ` index *is* on `(DOMAIN_ID, NAME)`, so the duplicates may carry invisible whitespace differences (or some other normalization at the index level). **Always look up by `ID`, never by `NAME`.**
+- **Z-prefix convention** for test/admin/deprecated roles: `ZSCCTEST` (the original deployment test role from 2013-12-11), `ZZZSCCTEST`, `ZSTEVE`, `ZSTEVE1`, `RNBLDZ`. Z-prefix sorts to the bottom alphabetically. `RNBLDZ` is a stillborn refactor of `RNBLD` (created 2023-02-03, abandoned 1 minute later — never used).
+- **Site-prefix convention** for ward roles (most of the table):
+  - `TUH*` — Temple University Hospital (~34 roles, the largest site)
+  - `AOH*` / `FCC*` — Fox Chase Cancer Center (legacy "American Oncologic Hospital" naming)
+  - `JNS*` — Jeanes Hospital
+  - `EPH*` — Episcopal Hospital
+  - `CHH*` — Chestnut Hill Hospital (onboarded 2023-08, newest site)
+  - `RN*` — cross-cutting nurse roles (RNBLD, RNNONBLD, RNEDALL, RNBLDZ)
+  - `SCC*` — SCC vendor admin roles
+- **Cross-cutting nurse-role status (verified)**:
+  - `RNBLD` — active, drives ~135K events/month — the operational nurse-collect role
+  - `RNNONBLD` — schema row exists but functionally deprecated (last touched 2019-12, ~6.5 years untouched)
+  - `RNEDALL` — TUH-specific despite the name ("TUH ED RN ALL")
+  - `RNBLDZ` — stillborn refactor, see Z-prefix note above
+- **Use IN-list for nurse-role classification, NEVER pattern matching** — `TUHBLD` ("TUH Bleeding Time") is NOT a nurse role; it's a TUH bleeding-time phlebotomy team. A `LIKE '%BLD'` pattern would falsely include it. Same for `JNSBLD`, `FCBLD`.
+- **Deployment timeline visible in CREATION_DT_UTC**:
+  - 2013-12-11: First role (ZSCCTEST, deployment test)
+  - 2014-05-06–05-09: Bulk role creation (~30 roles in 3 days) — original SoftID rollout for TUH/JNS/FCC/EPH
+  - 2019-10-28: Cross-cutting nurse roles added (RNBLD, RNNONBLD)
+  - 2023-08-16–09-02: CHH onboarding (Chestnut Hill bulk-created)
+  - 2025-10-21: Bulk-modification sweep of FCC and JNS roles
+
+### V_S_IDN_ASSIGN — User-to-role assignments (authorization, NOT activity)
+
+5,575 assignments (active + inactive). View **spans 4 base tables internally** (IDN_ASSIGN ⊕ IDN_ROLE ⊕ SEC_USER ⊕ SEC_USER_EXT) but exposes only 6 columns.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 14 | PK |
+| TECH_ID | VARCHAR2 31 | NOT NULL. Tech code (matches V_S_LAB_PHLEBOTOMIST.ID). 87.8% are 3–4 chars, max observed 10. Width declared 31 but unused |
+| ROLE_AA_ID | NUMBER 14 | NOT NULL. FK → V_S_IDN_ROLE.AA_ID |
+| IS_ACTIVE | CHAR 1 | Y or N — Y=current, N=former. Reliably populated, no NULLs |
+| USER_LOGIN_ID | VARCHAR2 19 | Login username. 100% populated in practice (schema is nullable). **Same namespace as V_P_IDN_LOG.USER_ID** — joinable. Max observed 11 chars, 92% are 6–8 chars |
+| ROLE_ID | VARCHAR2 15 | Denormalized role code (matches V_S_IDN_ROLE.ID). Saves a join |
+
+**Notes:**
+
+- **Critical: V_S_IDN_ASSIGN is a permissions matrix, NOT session-routing.** Only 2 people are formally assigned `RNBLD`, yet `RNBLD` drives ~135K events/month in V_P_IDN_LOG. Events get tagged with `ROLE_ID` because users *select* a role per session via `RoleSelection`, not because they're statically assigned. **Querying V_S_IDN_ASSIGN finds *who is authorized*, not *who acted*. For collector activity, query V_P_IDN_LOG instead.**
+- **SEC_USER metadata is NOT exposed via this view** — the 4-table join is internal to the view body for resolving TECH_ID and USER_LOGIN_ID. The rich indexed metadata on SEC_USER (UEMPID, UEXTID, UDEFSITE, etc.) is not queryable through V_S_IDN_ASSIGN. To use it, query the SEC_USER base table directly (assuming permission).
+- **Nurse-role assignment counts** (despite high event volume): RNBLD=2 active, RNNONBLD=1 active, RNEDALL=1 active, RNBLDZ=2 active.
+- **Ward-role assignments dominate** — each nurse holds assignments to all floors they're qualified for (cross-trained):
+  - AOH/JNS floors: 141–151 active per floor
+  - TUH floors: 48–70 per floor (more floors, sparser per-floor)
+  - CHH floors: 45–47 per floor
+  - EPH floors: 42–51 per floor
+- **TUHOVERNIGHT triple-role pattern**: `TUHOVERNGHT` has 60+2 assignments (operational), `TUHONOV` has 9+2 (deprecated), `TUHOVERNIGHT` has 0 (vestigial schema row). Use `TUHOVERNGHT` for current operations.
+
+### ⚠ V_S_IDN_DOMAIN_CANMSG — Broken view, do not query
+
+**This view raises ORA-01858 on every query in this deployment** due to a typo in the SCC-supplied view body. Composite view over `HLSYS_MESSAGE ⊕ IDN_DOMAIN_PARAM` with the broken predicate `mestext >= SYSDATE` (should be `mesexdt >= SYSDATE`). The intent was to filter to non-expired canned messages by their expiration date; the typo compares the message text body to today's date instead — fails on any non-date-parseable text (i.e., every normal canned message body).
+
+**Workaround (NOT verified in this session — pattern based on the broken view's body):**
+
+```sql
+-- Reassemble multi-line canned messages from HLSYS_MESSAGE base table.
+-- HLSYS_MESSAGE stores one row per line; reassembled by MESLINENO.
+SELECT
+    mesid                                                                AS id,
+    LAB."SOFTID_PKG".col_to_varchar2(
+        CAST(COLLECT(mestext ORDER BY meslineno) AS LAB."LABSTRINGSEQUENCE"),
+        '')                                                              AS text,
+    MAX(mediscont)                                                       AS is_discard_container
+FROM LAB."HLSYS_MESSAGE"
+WHERE medelete <> 'N'
+  AND mesexdt >= SYSDATE   -- corrected from broken view's `mestext >= SYSDATE`
+GROUP BY mesid;
+```
+
+The `IDN_DOMAIN_PARAM` regex-filter join from the broken view is omitted — add back if domain-specific scoping is needed.
+
+### Other IDN views — brief
+
+| View | Purpose | Notes |
+|------|---------|-------|
+| `V_S_IDN_DEVICE_OPTION` | Per-device key/value config | Base column is `TERMINAL` (5 chars), exposed by view as `DEVICE_ID`. Unique on `(TERMINAL, CODE)` |
+| `V_S_IDN_DOMAIN_LBLFMT` | Label format definitions per (domain, workstation) | `WORKSTATION` is VARCHAR2(160) — may hold lists; verify before using `=` filter. `LABEL_FORMAT` is VARCHAR2(3959) |
+| `V_S_IDN_DOMAIN_MESSAGE` | System messages per domain | `IS_ACTIVE` flag, `CODE`+`TEXT` pairs |
+| `V_S_IDN_DOMAIN_PARAM` | Key/value config per domain | The broken `CANMSG` view references this via `code='CannedFilter'` |
+| `V_S_IDN_DOMAIN_PRNMODEL` | Printer model assignments per domain | `LAB_LABEL_FORMAT` is the SoftLab format reference |
+| `V_S_IDN_DOMAIN_SOUND` | Audio assets per domain | `SOUND_DATA` is BLOB |
+| `V_S_IDN_FOLDER` | Folder definitions | NAME unique within domain (per `IDN_FOLDER_NAME_DOMAIN_UNIQ`) |
+| `V_S_IDN_ROLE_FOLDER` | Junction: role ↔ folder | Pure linking table |
+| `V_S_IDN_ROLE_PARAM` | Key/value config per role | Uses `ID`+`VALUE` (vs `CODE`+`VALUE` on V_S_IDN_DOMAIN_PARAM — naming drift) |
+| `V_S_IDN_ROLE_ROUTE` | Routes per role | Routes a role can work |
+| `V_S_IDN_ROLE_TEST` | (test, workstation) per role | `WORKSTATION` is VARCHAR2(5) here (vs VARCHAR2(160) on LBLFMT — same column name, different shape) |
+| `V_S_IDN_ROLE_TUBE` | Tube types per role | Tube types a role can use |
+
+These haven't been deeply probed; if column-level detail is needed, run a deep probe per the discovery template.
+
+---
+
 ## Not Found in Dictionaries
 
 | View | Notes |
 |------|-------|
-| V_P_IDN_LOG | SoftID scan/event log. Columns: AA_ID (NUMBER 22), SITE_ID (5), USER_ID (51), ROLE_ID (15), PHLEB_ID (51), EVENT (31), PATIENT_ID (23), SPECIMEN_ID (13), WARD_ID (15), DEVICE_ID (51), TERMINAL_ID (5), MESSAGE (2048), LOG_DT/LOG_DT_SERVER/LOG_DT_UTC/LOG_DT_DEV (DATE). **Validated facts:** `ROLE_ID` DOES resolve cleanly to `V_S_IDN_ROLE.ID` (every observed value matched except one blank/NULL-ish string). Values include both ward codes (TUH7E, JNS3C, CHH4S, AOH1C...) and functional codes (RNBLD, RNNONBLD, RNEDALL, *PCALL). `ROLE_ID` is populated on **every event type except `LoginToSoftID`** — it's a reliable role signal across all events, not just `RoleSelection`. `PHLEB_ID` is the collector-identity join key (matches `V_P_LAB_TUBEINFO.COLLECTION_PHLEB`); `USER_ID` is a different value — validated that zero collectors match via `USER_ID` when `PHLEB_ID` doesn't. `EVENT` enum observed: UploadCollection, LabelPrinted, CollectionListDownload, RoleSelection, PatientCollectionQuery, LoginToSoftID, LogOffFromSoftID, MicroSourceSiteUpdated, PatientMismatch, KeyedPatientCollectionQuery, SpecimenMismatch. Canonical nurse-role list (from `V_S_IDN_ROLE` by NAME): `RNBLD`, `RNNONBLD`, `RNEDALL` — but in observed monthly data, essentially only `RNBLD` fires (135K events/month vs. 0 for the others). Use IN-list for classification, never pattern matching — `TUHBLD` ("TUH Bleeding Time") would be a false positive on any `%BLD` pattern. |
 | V_P_GCM_OTESTRESULT | GCM (likely General Communication Module) test results table with columns GP_OTR_*. Appears to be for Cytogenetics/Pathology results based on column names (KTYPE, KARYOTYPE, ABNCH, METACELLS, INTERCELLS, etc.). Table exists but is **empty in production** — not useful for standard lab TAT queries. Use V_P_LAB_TEST_RESULT instead. |
 | V_P_GCM_QUEUEMSG / V_P_GCM_MOMCALL / V_P_GCM_QUEUE / V_P_GCM_QUEUEPAR | GCM HIS↔LIS interface queue/message tables. Schema looks promising for raw HL7 storage (`GP_QUEM_MSG` CLOB, `GP_MOMCALL_MESSAGE` BLOB, ORDNUM/HISNUM/LISNUM keys, MOM event/status fields), but **all are empty in this deployment** — including the underlying `LAB.GP_QUEUEMSG` / `LAB.GP_MOMCALL` base tables. HL7 messages are not persisted in Oracle here, so raw OBR[11] cannot be retrieved from these views. Use `V_P_LAB_SPECIMEN.NURSE_COLL` (LIS-stored OBR[11]) for nurse-vs-lab collect classification instead. |
-| SoftID (IDN) family | 18 views: `V_P_IDN_LOG`, `V_LAB_IDN_ROUTE`, `V_S_IDN_ASSIGN`, `V_S_IDN_DEVICE_OPTION`, `V_S_IDN_DOMAIN`, `V_S_IDN_DOMAIN_{CANMSG,LBLFMT,MESSAGE,PARAM,PRNMODEL,SOUND}`, `V_S_IDN_FOLDER`, `V_S_IDN_ROLE`, `V_S_IDN_ROLE_{FOLDER,PARAM,ROUTE,TEST,TUBE}`. SoftID is SCC's specimen-ID / barcode-scanning module. Key views: `V_S_IDN_ROLE` (AA_ID, DOMAIN_ID, ID, NAME + timestamps) and `V_S_IDN_ASSIGN` (AA_ID, TECH_ID, ROLE_AA_ID, IS_ACTIVE, USER_LOGIN_ID, ROLE_ID). **Roles are ward-scoped, not job-scoped** — do not use for Nurse/Phleb classification (see memory `project_softid_role_model.md`). For collector-type, use `V_S_LAB_PHLEBOTOMIST.NURSE`. |
 | USER_COMPARISON_SCAN / _SUMMARY / _VALUES | Custom (non-SCC) views — no `V_` prefix. Likely hospital-built reporting views; not part of SoftID or standard SCC modules. |
 | V_S_GCM_{GROSSCANNED,IMGSCANNEDCAT,SCANNER} | Pathology grossing/imaging module (same `GCM` family as the empty `V_P_GCM_OTESTRESULT`). Not relevant for blood-bank / chemistry / specimen-collection queries. |
 
