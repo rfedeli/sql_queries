@@ -1573,3 +1573,109 @@ SELECT
 -- LEFT JOIN amender_role  ar ON ar.TECH_ID = hf.MOD_TECH
 -- LEFT JOIN amender_group ag ON ag.TECH_ID = hf.MOD_TECH
 -- ...;
+
+
+/* ----------------------------------------------------------------------------
+   52. V_P_LAB_MESSAGE — per-accession comment dump for application comparison
+
+       Context: corrected_results_summary.sql surfaces the value transition
+       and audit metadata, but exposes no result-level free-text narrative.
+       The SCC client's Result Comment tab writes user-authored comments to
+       the result-comment-line table — legacy SCC docs call this RPMESS,
+       and the modern view layer exposes it as V_P_LAB_MESSAGE (dict line
+       3256). The 18-location sweep that grounded the "chemistry correction
+       notice is hard-coded" finding included V_P_LAB_MESSAGE.TEXT and
+       returned 0 hits for the system-template phrase — but that was scoped
+       to *system* text. User-authored narrative on RMOD-amended results
+       was not characterized.
+
+       Goal: dump every V_P_LAB_MESSAGE row tied to the RMOD-amended cohort
+       with enough context (accession, MRN, test, mod time) to pull the
+       same result up in the SCC client and compare what the application
+       displays vs what the table actually carries. If the dump yields
+       narrative the summary should surface, this informs whether to add a
+       comment column to corrected_results_summary.sql.
+
+       Structure: 52a discovers schema (no prior probe captured it), 52b
+       runs the dump once 52a's column names are filled in.
+   --------------------------------------------------------------------------- */
+
+-- 52a. V_P_LAB_MESSAGE column inventory
+--      Run first. Identifies (a) the FK back to V_P_LAB_TEST_RESULT
+--      (likely ATEST_AA_ID or TEST_RESULT_AA_ID — confirm here), (b) the
+--      text/CLOB column holding the comment body (the dict references
+--      .TEXT), and (c) any line-number / type / timestamp columns we'll
+--      want in the dump's ORDER BY and output.
+SELECT
+    COLUMN_ID,
+    COLUMN_NAME,
+    DATA_TYPE,
+    DATA_LENGTH,
+    NULLABLE
+FROM ALL_TAB_COLUMNS
+WHERE TABLE_NAME = 'V_P_LAB_MESSAGE'
+ORDER BY COLUMN_ID;
+
+
+-- 52b. Per-accession comment dump (RMOD cohort, 30-day window)
+--      Mirrors corrected_results_summary.sql's filters: RMOD-only, valid
+--      MRN, EDITED_FLAG='Y', human amenders (system-identity exclusion
+--      list verified in §42).
+--
+--      Fill in <test_result_fk> and <text_col> from 52a's output. If
+--      V_P_LAB_MESSAGE has a line-number or sequence column for multi-
+--      line comments, append it to the ORDER BY so the lines surface in
+--      the order the SCC client renders them.
+--
+--      Note: V_P_LAB_MESSAGE rows attach to the LIVE result, not to a
+--      specific amendment — there is no MOD_DT-snapshot of comments here
+--      (that's PREV_COMMENT on V_P_LAB_TEST_RESULT_HISTORY). What this
+--      dumps is the current comment state, which is what the SCC client's
+--      Result Comment tab also displays.
+-- WITH amended_atests AS (
+--     SELECT DISTINCT h.ATEST_AA_ID
+--     FROM V_P_LAB_TEST_RESULT_HISTORY h
+--     WHERE h.MOD_DT >= SYSDATE - 30
+--       AND h.TYPE   = 'RMOD'
+--       AND h.MOD_TECH NOT IN ('HIS','SCC','AUTOV','RBS','I/AUT','AUTON')
+-- )
+-- SELECT
+--     o.ID                                          AS accession,
+--     pt.ID                                         AS mrn,
+--     tr.TEST_NAME                                  AS test,
+--     tr.AA_ID                                      AS atest_aa_id,
+--     m.*                                          -- surface all msg cols
+--                                                   --   so we can see TYPE/
+--                                                   --   line-no/timestamp
+--                                                   --   alongside text
+-- FROM amended_atests aa
+-- JOIN V_P_LAB_TEST_RESULT tr ON tr.AA_ID = aa.ATEST_AA_ID
+-- JOIN V_P_LAB_ORDER       o  ON o.AA_ID  = tr.ORDER_AA_ID
+-- JOIN V_P_LAB_STAY        st ON st.AA_ID = o.STAY_AA_ID
+-- JOIN V_P_LAB_PATIENT     pt ON pt.AA_ID = st.PATIENT_AA_ID
+-- JOIN V_P_LAB_MESSAGE     m  ON m.<test_result_fk> = tr.AA_ID
+-- WHERE REGEXP_LIKE(pt.ID, '^E[0-9]+$')
+--   AND tr.EDITED_FLAG = 'Y'
+-- ORDER BY pt.ID, o.ID, tr.AA_ID;  -- add m.<line_no_col> when known
+
+
+-- 52c. Coverage cross-check (run after 52b is parameterized)
+--      How many of the RMOD-amended results in the 30-day cohort have
+--      ANY V_P_LAB_MESSAGE row? If coverage is near 0%, the table is a
+--      dead end for corrected-results enrichment. If meaningfully > 0%,
+--      promote one of 52b's text columns to a column on
+--      corrected_results_summary.sql (or its audit sibling).
+-- SELECT
+--     COUNT(DISTINCT aa.ATEST_AA_ID)                 AS amended_results,
+--     COUNT(DISTINCT m.<test_result_fk>)             AS results_with_message,
+--     ROUND(100 * COUNT(DISTINCT m.<test_result_fk>)
+--                / NULLIF(COUNT(DISTINCT aa.ATEST_AA_ID), 0), 2)
+--                                                    AS pct_with_message
+-- FROM (
+--     SELECT DISTINCT h.ATEST_AA_ID
+--     FROM V_P_LAB_TEST_RESULT_HISTORY h
+--     WHERE h.MOD_DT >= SYSDATE - 30
+--       AND h.TYPE   = 'RMOD'
+--       AND h.MOD_TECH NOT IN ('HIS','SCC','AUTOV','RBS','I/AUT','AUTON')
+-- ) aa
+-- LEFT JOIN V_P_LAB_MESSAGE m ON m.<test_result_fk> = aa.ATEST_AA_ID;
