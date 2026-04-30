@@ -1857,3 +1857,396 @@ FROM (
     ORDER BY MOD_DT DESC
 )
 WHERE ROWNUM <= 5;
+
+
+/* ----------------------------------------------------------------------------
+   54. SCC tag-vocabulary validation
+
+       Source: an SCC employee provided the following tag→description list,
+       said to be "in the message table." Validate: do these tag codes
+       actually exist in V_S_LAB_CANNED_MESSAGE (the most likely candidate
+       given prior probes), and if not, hunt across other setup views.
+
+       Reference list (tag / description as supplied):
+         DIFF       Comment Difference
+         RMOD       Result Changes
+         TRMOD      Tech Review
+         REVU       Pathologist Review
+         VMOD       Result Unverification
+         CALL       Call to ward/clinic
+         CALLED     Called to ward/clinic
+         TCANC      Test Cancelled
+         TADD       Test Added
+         OCANC      Order cancelled
+         SCANC      Specimen cancelled
+         TAUDIT     Audit
+         OLDCOLL    Recollection
+         OLDRCVD    Recollection (rcv)
+         MODCOM     Comment Changes
+         MODCOT     Test Comment Changes
+         FSTUDY     Family Study
+         RLNO       Reference Lab Number
+         RFL        Reference Lab Addr
+         UNACT      Unit Activity
+         FFIN       First time final
+         SMOD       Status modified
+         IMOD       Isolate modified
+         IMP        Panel modified
+         SUPMOD     Suppress rule modified
+         DEVMOD     Standard Dev. Rule modified
+         DMOD       Demographic Changes
+         MCALL      Send to callist
+         SRC_T      Source modified
+         ANT_TD     Drugs modified
+         ANT_TT     Drugs comment modified
+         PIMIC      Order posted
+         COM_INST   Comment instruction modified
+         TGEN       Test generated
+         MGEN       Media generated
+         MADD       Media added
+         SSITE      Site added/modified
+
+       Cross-checks against prior probes:
+         - RMOD: matches V_P_LAB_TEST_RESULT_HISTORY.TYPE (verified §2)
+         - DMOD: SCC says "Demographic Changes" but our §27/§30b
+           characterized DMOD on V_P_LAB_TEST_RESULT_HISTORY as the
+           "non-value edit" (range/comment/calc-component) — semantic
+           overlap or rename in this deployment? Worth flagging.
+         - MODCOM: matches V_P_LAB_ACT_HISTORY.TYPE (verified §53b)
+   --------------------------------------------------------------------------- */
+
+-- 54a. Direct ID lookup in V_S_LAB_CANNED_MESSAGE
+--      Most-likely candidate per CLAUDE.md. The view's ID column is
+--      the lookup key; if these tags are canned-message references,
+--      they'll surface here. Active + unexpired only.
+SELECT
+    ID,
+    CATEGORY,
+    COUNT(*)                                       AS line_count,
+    MAX(LENGTH(TEXT))                              AS max_text_len
+FROM V_S_LAB_CANNED_MESSAGE
+WHERE ID IN ('DIFF','RMOD','TRMOD','REVU','VMOD','CALL','CALLED',
+             'TCANC','TADD','OCANC','SCANC','TAUDIT','OLDCOLL','OLDRCVD',
+             'MODCOM','MODCOT','FSTUDY','RLNO','RFL','UNACT','FFIN',
+             'SMOD','IMOD','IMP','SUPMOD','DEVMOD','DMOD','MCALL',
+             'SRC_T','ANT_TD','ANT_TT','PIMIC','COM_INST','TGEN','MGEN',
+             'MADD','SSITE')
+  AND ACTIVE = 'Y'
+  AND (EXP_DT IS NULL OR EXP_DT >= SYSDATE)
+GROUP BY ID, CATEGORY
+ORDER BY ID;
+
+
+-- 54b. If 54a returned hits — sample the actual TEXT for spot-check
+--      against the SCC employee's descriptions. Reassemble multi-line
+--      messages by LINE_NUMBER and compare body to expected description.
+SELECT
+    ID,
+    LINE_NUMBER,
+    CATEGORY,
+    TEXT
+FROM V_S_LAB_CANNED_MESSAGE
+WHERE ID IN ('DIFF','RMOD','TRMOD','REVU','VMOD','CALL','CALLED',
+             'TCANC','TADD','OCANC','SCANC','TAUDIT','OLDCOLL','OLDRCVD',
+             'MODCOM','MODCOT','FSTUDY','RLNO','RFL','UNACT','FFIN',
+             'SMOD','IMOD','IMP','SUPMOD','DEVMOD','DMOD','MCALL',
+             'SRC_T','ANT_TD','ANT_TT','PIMIC','COM_INST','TGEN','MGEN',
+             'MADD','SSITE')
+  AND ACTIVE = 'Y'
+  AND (EXP_DT IS NULL OR EXP_DT >= SYSDATE)
+ORDER BY ID, LINE_NUMBER;
+
+
+-- 54c. Broader hunt — find ANY table/view in the LAB schema whose text
+--      column contains one of these tags as a literal value. Catches
+--      lookup tables we haven't probed yet (e.g., the SCC employee may
+--      have meant a HLSYS_* or LAB_* base table, not a V_*-prefixed
+--      view). Restricts to short text columns since the tags are short
+--      codes (≤ 8 chars), to keep the search bounded.
+--
+--      Run AFTER 54a/b. If 54a found hits, this is just a confirmatory
+--      sanity check. If 54a found nothing, this becomes the primary
+--      identification probe.
+SELECT
+    c.OWNER,
+    c.TABLE_NAME,
+    c.COLUMN_NAME,
+    c.DATA_TYPE,
+    c.DATA_LENGTH
+FROM ALL_TAB_COLUMNS c
+WHERE c.OWNER = 'LAB'
+  AND c.DATA_TYPE = 'VARCHAR2'
+  AND c.DATA_LENGTH BETWEEN 4 AND 16
+  AND c.COLUMN_NAME IN ('CODE','ID','TAG','TYPE','MSGID','MESID',
+                        'TAGCODE','EVENTCODE','LOG_TYPE','EVENT_TYPE')
+  AND c.TABLE_NAME LIKE 'V\_S\_%' ESCAPE '\'
+ORDER BY c.TABLE_NAME, c.COLUMN_NAME;
+-- Then for each promising candidate from the result set, run a
+-- targeted SELECT WHERE <col> IN (...tag list...) to see if those
+-- table holds the tags. Templated stub:
+-- SELECT *
+-- FROM <candidate_view>
+-- WHERE <code_column> IN ('DIFF','RMOD',...);
+
+
+-- 54d. V_P_LAB_MESSAGE — re-verify per SCC employee's hint
+--      §52a-d concluded V_P_LAB_MESSAGE is vestigial, but those probes
+--      were date-windowed (last 30 days). The SCC employee suggested
+--      tag descriptions might live in this view (their typo: 'V_P_LAB
+--      _MESSGE' — pretty clearly V_P_LAB_MESSAGE). Older data might
+--      exist outside our window. Re-check without a date filter.
+--
+--      The view's TYPE column is CHAR 1 — too narrow to hold the
+--      multi-char SCC tag codes (DIFF, RMOD, etc.). If the tag
+--      descriptions are here, they'd be in the TEXT VARCHAR2 4000
+--      column.
+SELECT
+    COUNT(*)                                       AS total_rows,
+    COUNT(DISTINCT TEST_RESULT_AA_ID)              AS distinct_results,
+    COUNT(DISTINCT TYPE)                           AS distinct_types,
+    MIN(UPDATE_DT)                                 AS earliest,
+    MAX(UPDATE_DT)                                 AS latest
+FROM V_P_LAB_MESSAGE;
+
+
+-- 54e. If 54d shows non-zero row count, search TEXT for SCC tag
+--      descriptions. Returns rows where the message body matches
+--      any of the descriptions verbatim (case-insensitive).
+-- SELECT
+--     ID,
+--     TYPE,
+--     TECH_ID,
+--     UPDATE_DT,
+--     TEXT
+-- FROM V_P_LAB_MESSAGE
+-- WHERE LOWER(TEXT) IN (
+--         LOWER('Comment Difference'),
+--         LOWER('Result Changes'),
+--         LOWER('Tech Review'),
+--         LOWER('Pathologist Review'),
+--         LOWER('Result Unverification'),
+--         LOWER('Call to ward/clinic'),
+--         LOWER('Called to ward/clinic'),
+--         LOWER('Test Cancelled'),
+--         LOWER('Test Added'),
+--         LOWER('Order cancelled'),
+--         LOWER('Specimen cancelled'),
+--         LOWER('Audit'),
+--         LOWER('Recollection'),
+--         LOWER('Recollection (rcv)'),
+--         LOWER('Comment Changes'),
+--         LOWER('Test Comment Changes'),
+--         LOWER('Family Study'),
+--         LOWER('Reference Lab Number'),
+--         LOWER('Reference Lab Addr'),
+--         LOWER('Unit Activity'),
+--         LOWER('First time final'),
+--         LOWER('Status modified'),
+--         LOWER('Isolate modified'),
+--         LOWER('Panel modified'),
+--         LOWER('Suppress rule modified'),
+--         LOWER('Standard Dev. Rule modified'),
+--         LOWER('Demographic Changes'),
+--         LOWER('Send to callist'),
+--         LOWER('Source modified'),
+--         LOWER('Drugs modified'),
+--         LOWER('Drugs comment modified'),
+--         LOWER('Order posted'),
+--         LOWER('Comment instruction modified'),
+--         LOWER('Test generated'),
+--         LOWER('Media generated'),
+--         LOWER('Media added'),
+--         LOWER('Site added/modified')
+-- )
+-- ORDER BY UPDATE_DT DESC;
+
+
+-- 54f. Cross-history TYPE/MOD_DT discovery
+--      Validates the hypothesis: the SCC employee's tag list is the union
+--      of TYPE enum values across SCC's history-flavored views, not a
+--      single decoder lookup. First identifies which V_P_LAB_*_HISTORY
+--      views have TYPE and MOD_DT columns so 54g's UNION ALL only
+--      references real columns.
+SELECT
+    c.TABLE_NAME,
+    MAX(CASE WHEN c.COLUMN_NAME = 'TYPE'
+             THEN c.DATA_TYPE || '(' || c.DATA_LENGTH || ')' END)  AS type_col,
+    MAX(CASE WHEN c.COLUMN_NAME = 'MOD_DT'  THEN 'Y' END)           AS has_mod_dt,
+    MAX(CASE WHEN c.COLUMN_NAME = 'MOD_TECH' THEN 'Y' END)          AS has_mod_tech
+FROM ALL_TAB_COLUMNS c
+WHERE c.TABLE_NAME LIKE 'V\_P\_LAB\_%HISTORY' ESCAPE '\'
+GROUP BY c.TABLE_NAME
+ORDER BY c.TABLE_NAME;
+
+
+-- 54g. Cross-history TYPE survey (30-day window)
+--      Run AFTER 54f confirms which views have TYPE+MOD_DT. UNIONs the
+--      distinct TYPE values + row counts across each candidate view.
+--      The output: which SCC tags from the employee's 37-row list
+--      actually appear in this deployment's history data, and where.
+--
+--      If 54f surfaces additional history views beyond the five
+--      anticipated below, add corresponding UNION ALL branches.
+SELECT *
+FROM (
+    SELECT 'V_P_LAB_TEST_RESULT_HISTORY' AS history_view,
+           TYPE                          AS tag,
+           COUNT(*)                      AS rows_30d
+    FROM V_P_LAB_TEST_RESULT_HISTORY
+    WHERE MOD_DT >= SYSDATE - 30
+    GROUP BY TYPE
+    UNION ALL
+    SELECT 'V_P_LAB_ACT_HISTORY', TYPE, COUNT(*)
+    FROM V_P_LAB_ACT_HISTORY
+    WHERE MOD_DT >= SYSDATE - 30
+    GROUP BY TYPE
+    UNION ALL
+    SELECT 'V_P_LAB_TUBE_HISTORY', TYPE, COUNT(*)
+    FROM V_P_LAB_TUBE_HISTORY
+    WHERE MOD_DT >= SYSDATE - 30
+    GROUP BY TYPE
+    UNION ALL
+    SELECT 'V_P_LAB_PAT_HISTORY', TYPE, COUNT(*)
+    FROM V_P_LAB_PAT_HISTORY
+    WHERE MOD_DT >= SYSDATE - 30
+    GROUP BY TYPE
+    UNION ALL
+    SELECT 'V_P_LAB_PLAB_HISTORY', TYPE, COUNT(*)
+    FROM V_P_LAB_PLAB_HISTORY
+    WHERE MOD_DT >= SYSDATE - 30
+    GROUP BY TYPE
+)
+ORDER BY history_view, rows_30d DESC;
+
+
+/* ----------------------------------------------------------------------------
+   55. Chase: where do the 34 untagged values from the SCC employee's list
+       actually live?
+
+       §54f-g confirmed that 3 of 37 tags (RMOD, DMOD, MODCOM) are present
+       in LAB *_HISTORY views, and 34 are NOT. Hypothesis: those 34 tags
+       live across non-LAB-history modules — cancellation, call family,
+       micro, blood bank — each writing to its own short-code column
+       (TYPE / CODE / EVENT / STATUS / ACTION).
+
+       Strategy:
+         55a. Discover candidate VARCHAR2 columns across V_P_LAB_*,
+              V_P_MIC_*, V_P_BB_* views with names that suggest event
+              tags and lengths suitable for short codes.
+         55b. For each candidate from 55a, search for the 34 untagged
+              values. Templated; populate after 55a returns.
+
+       Untagged tag list (for reference):
+         DIFF, TRMOD, REVU, VMOD, CALL, CALLED, TCANC, TADD, OCANC,
+         SCANC, TAUDIT, OLDCOLL, OLDRCVD, MODCOT, FSTUDY, RLNO, RFL,
+         UNACT, FFIN, SMOD, IMOD, IMP, SUPMOD, DEVMOD, MCALL, SRC_T,
+         ANT_TD, ANT_TT, PIMIC, COM_INST, TGEN, MGEN, MADD, SSITE
+   --------------------------------------------------------------------------- */
+
+-- 55a. Candidate column discovery
+--      VARCHAR2 columns 4–16 chars wide, with names suggesting event/tag
+--      classification. Restricts to V_P_LAB_*, V_P_MIC_*, V_P_BB_* views.
+SELECT
+    c.TABLE_NAME,
+    c.COLUMN_NAME,
+    c.DATA_TYPE,
+    c.DATA_LENGTH
+FROM ALL_TAB_COLUMNS c
+WHERE (c.TABLE_NAME LIKE 'V\_P\_LAB\_%' ESCAPE '\'
+       OR c.TABLE_NAME LIKE 'V\_P\_MIC\_%' ESCAPE '\'
+       OR c.TABLE_NAME LIKE 'V\_P\_BB\_%' ESCAPE '\')
+  AND c.DATA_TYPE = 'VARCHAR2'
+  AND c.DATA_LENGTH BETWEEN 4 AND 16
+  AND c.COLUMN_NAME IN ('TYPE','EVENT_TYPE','EVENT','CODE','TAG',
+                        'ACTION','ACTIVITY','STATUS','REASON_CODE',
+                        'CANCEL_TYPE','CANCEL_CODE','CALL_TYPE')
+  AND c.TABLE_NAME NOT LIKE '%HISTORY'   -- already covered in §54
+ORDER BY c.TABLE_NAME, c.COLUMN_NAME;
+
+
+-- 55b. Survey across event-shaped candidate columns from 55a
+--      Searches each candidate (table, column) for any of the 34
+--      untagged tags. Each branch returns: source name, tag value
+--      hit, row count in the 30-day window.
+--
+--      All branches are date-windowed to SYSDATE - 30 to keep the
+--      query under a few seconds. Without the date predicate this
+--      ran ~3 minutes — V_P_LAB_TEST_RESULT alone is ~5M rows/month
+--      and the dict's "empty STATUS" claim doesn't save you the
+--      full-table scan.
+--
+--      Date columns per view (verified against CLAUDE.md):
+--        V_P_BB_Action              → STATUSDT
+--        V_P_BB_Test                → REQUESTEDDT
+--        V_P_BB_Result              → REQUESTEDDT
+--
+--      Dropped after the LAB-side branches refused to return in 5+
+--      minutes (user killed the query):
+--        V_P_LAB_CANCELLATION.CODE     — vestigial per dict (0 of 1.5M
+--          rows populated in 3-month sample). REASON is the live
+--          classification, not CODE. Don't scan.
+--        V_P_LAB_TEST_RESULT.STATUS    — vestigial per dict; ~5M
+--          rows/month scan for zero hits.
+--        V_P_LAB_TUBE_LOCATION.STATUS  — wrong domain (Collected /
+--          Transit / Resulted tracking), not event tags.
+--
+--      Dropped (date column not documented or wrong in CLAUDE.md):
+--        V_P_BB_BB_Exception, V_P_BB_Patient_Message,
+--        V_P_BB_Nurse_Observation (OBSERVATION_DT in dict but
+--        ORA-00904 on actual schema — dict needs correction).
+--      Small views — re-add after probing the right date column if
+--      missing tags don't surface elsewhere.
+SELECT *
+FROM (
+    SELECT 'V_P_BB_Action.CODE' AS view_name,
+           CODE                  AS tag,
+           COUNT(*)              AS rows_30d
+    FROM V_P_BB_Action
+    WHERE STATUSDT >= SYSDATE - 30
+      AND CODE IN ('DIFF','TRMOD','REVU','VMOD','CALL','CALLED',
+                   'TCANC','TADD','OCANC','SCANC','TAUDIT','OLDCOLL',
+                   'OLDRCVD','MODCOT','FSTUDY','RLNO','RFL','UNACT',
+                   'FFIN','SMOD','IMOD','IMP','SUPMOD','DEVMOD',
+                   'MCALL','SRC_T','ANT_TD','ANT_TT','PIMIC','COM_INST',
+                   'TGEN','MGEN','MADD','SSITE')
+    GROUP BY CODE
+    UNION ALL
+    SELECT 'V_P_BB_Test.CODE', CODE, COUNT(*)
+    FROM V_P_BB_Test
+    WHERE REQUESTEDDT >= SYSDATE - 30
+      AND CODE IN ('DIFF','TRMOD','REVU','VMOD','CALL','CALLED',
+                   'TCANC','TADD','OCANC','SCANC','TAUDIT','OLDCOLL',
+                   'OLDRCVD','MODCOT','FSTUDY','RLNO','RFL','UNACT',
+                   'FFIN','SMOD','IMOD','IMP','SUPMOD','DEVMOD',
+                   'MCALL','SRC_T','ANT_TD','ANT_TT','PIMIC','COM_INST',
+                   'TGEN','MGEN','MADD','SSITE')
+    GROUP BY CODE
+    UNION ALL
+    SELECT 'V_P_BB_Result.CODE', CODE, COUNT(*)
+    FROM V_P_BB_Result
+    WHERE REQUESTEDDT >= SYSDATE - 30
+      AND CODE IN ('DIFF','TRMOD','REVU','VMOD','CALL','CALLED',
+                   'TCANC','TADD','OCANC','SCANC','TAUDIT','OLDCOLL',
+                   'OLDRCVD','MODCOT','FSTUDY','RLNO','RFL','UNACT',
+                   'FFIN','SMOD','IMOD','IMP','SUPMOD','DEVMOD',
+                   'MCALL','SRC_T','ANT_TD','ANT_TT','PIMIC','COM_INST',
+                   'TGEN','MGEN','MADD','SSITE')
+    GROUP BY CODE
+)
+ORDER BY source, rows_30d DESC;
+
+
+-- 55c. Broader column-name search if 55b doesn't cover micro tags
+--      Run if IMOD/IMP/MGEN/MADD/TGEN/SSITE/SRC_T/ANT_TD/ANT_TT
+--      don't surface in 55b. Searches V_P_MIC_* views with a
+--      broader column-name net.
+-- SELECT
+--     c.TABLE_NAME,
+--     c.COLUMN_NAME,
+--     c.DATA_TYPE,
+--     c.DATA_LENGTH
+-- FROM ALL_TAB_COLUMNS c
+-- WHERE c.TABLE_NAME LIKE 'V\_P\_MIC\_%' ESCAPE '\'
+--   AND c.DATA_TYPE = 'VARCHAR2'
+--   AND c.DATA_LENGTH BETWEEN 4 AND 16
+-- ORDER BY c.TABLE_NAME, c.COLUMN_NAME;

@@ -21,6 +21,16 @@ where the value actually moved, returns:
                       reviewing rows: a populated CHANGE_REASON is
                       an explicit narrative the amender chose to
                       record, distinct from comment-edit churn.
+  REPORT_START_DATE   :START_DATE bind parameter formatted as
+                      MM/DD/YYYY string (no time component),
+                      echoed on every row so the Grapecity report
+                      header/footer can display "Range: <start> –
+                      <end>" without re-fetching the parameter.
+                      Returned as VARCHAR2 so the time '12:00:00 AM'
+                      doesn't surface in the rendered report.
+  REPORT_END_DATE     :END_DATE bind parameter formatted as
+                      MM/DD/YYYY string. Same shape as
+                      REPORT_START_DATE.
 
 V_P_LAB_TEST_RESULT_HISTORY semantics
   - One row per modification event; ATEST_AA_ID -> tr.AA_ID.
@@ -105,7 +115,11 @@ SELECT
     COALESCE(hf.next_prev_result, tr.RESULT)        AS RESULT_TO,
     hf.MOD_TECH                                     AS CHANGED_BY,
     hf.MOD_DT                                       AS CHANGED_AT,
-    hf.MOD_REASON                                   AS CHANGE_REASON
+    hf.MOD_REASON                                   AS CHANGE_REASON,
+    TO_CHAR(TO_DATE(:START_DATE, 'YYYYMMDD'),
+            'MM/DD/YYYY')                           AS REPORT_START_DATE,
+    TO_CHAR(TO_DATE(:END_DATE,   'YYYYMMDD'),
+            'MM/DD/YYYY')                           AS REPORT_END_DATE
 FROM hist_full hf
 INNER JOIN V_P_LAB_TEST_RESULT tr ON tr.AA_ID = hf.ATEST_AA_ID
 INNER JOIN V_P_LAB_ORDER o        ON o.AA_ID  = tr.ORDER_AA_ID
