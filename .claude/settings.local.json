@@ -20,7 +20,9 @@
       "Bash(git rm:*)",
       "Bash(ls:*)",
       "Bash(move:*)",
-      "Bash(git status -u)"
+      "Bash(git status -u)",
+      "Bash(git rev-list *)",
+      "Bash(git checkout *)"
     ]
   }
 }

@@ -23,7 +23,7 @@ Parameters (Grapecity parameter type = String, YYYYMMDD):
 WITH order_intent AS (
   -- Per-order OBR[11] flag from V_P_LAB_SPECIMEN.NURSE_COLL.
   -- An order may have multiple tubes/specimens; MAX collapses to one value
-  -- per order (validated as consistent within ABG/VBG orders).
+  -- per order (validated as consistent within VBG orders).
   SELECT
     tu.ORDER_AA_ID,
     MAX(sp.NURSE_COLL) AS NURSE_COLL
