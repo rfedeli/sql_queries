@@ -1601,11 +1601,29 @@ SELECT
    --------------------------------------------------------------------------- */
 
 -- 52a. V_P_LAB_MESSAGE column inventory
---      Run first. Identifies (a) the FK back to V_P_LAB_TEST_RESULT
---      (likely ATEST_AA_ID or TEST_RESULT_AA_ID — confirm here), (b) the
---      text/CLOB column holding the comment body (the dict references
---      .TEXT), and (c) any line-number / type / timestamp columns we'll
---      want in the dump's ORDER BY and output.
+--      Run first. Identifies (a) the FK back to V_P_LAB_TEST_RESULT,
+--      (b) the text column holding the comment body, (c) any
+--      line-number / type / timestamp columns to use in dump ORDER BY.
+--
+--      Discoveries (verified 2026-04-30):
+--        - 17 columns total. PK=AA_ID.
+--        - FK to result row is TEST_RESULT_AA_ID (NUMBER 22).
+--        - Comment body is TEXT (VARCHAR2 4000, NOT CLOB — 4000-char
+--          per-line ceiling).
+--        - TYPE is CHAR 1 — likely the A/I/R/S internal-notes-style
+--          category from the SoftReports docs, or something else;
+--          decoded in 52d.
+--        - TECH_ID is VARCHAR2 16 — author of the comment.
+--        - UPDATE_DATE/UPDATE_TIME/UPDATE_DT is the standard SCC
+--          numeric+DATE triple. UPDATE_DT is canonical.
+--        - TEST_RESULT_SORT (NUMBER 22) is the per-result line-number
+--          for multi-line comments. ORDER BY this in 52b.
+--        - Five owner FKs declared (STAY/PATIENT/TEST_RESULT/ORDER/
+--          TUBE) but ONLY TEST_RESULT_AA_ID is real. The other four
+--          (STAY_AA_ID, PATIENT_AA_ID, ORDER_AA_ID, TUBE_AA_ID) all
+--          have DATA_LENGTH=0 — schema slots, never written. So this
+--          view is effectively result-level only despite the wider
+--          schema, same pattern as V_P_LAB_INTERNAL_NOTE.
 SELECT
     COLUMN_ID,
     COLUMN_NAME,
@@ -1622,60 +1640,220 @@ ORDER BY COLUMN_ID;
 --      MRN, EDITED_FLAG='Y', human amenders (system-identity exclusion
 --      list verified in §42).
 --
---      Fill in <test_result_fk> and <text_col> from 52a's output. If
---      V_P_LAB_MESSAGE has a line-number or sequence column for multi-
---      line comments, append it to the ORDER BY so the lines surface in
---      the order the SCC client renders them.
+--      V_P_LAB_MESSAGE rows attach to the LIVE result, not snapshotted
+--      at amendment time — there is no comment history here (that's
+--      h.PREV_COMMENT on V_P_LAB_TEST_RESULT_HISTORY). What this dumps
+--      is the current comment state, which is what the SCC client's
+--      Result Comment tab also displays. So this dump should match
+--      side-by-side with what you see in SCC for the same accession.
 --
---      Note: V_P_LAB_MESSAGE rows attach to the LIVE result, not to a
---      specific amendment — there is no MOD_DT-snapshot of comments here
---      (that's PREV_COMMENT on V_P_LAB_TEST_RESULT_HISTORY). What this
---      dumps is the current comment state, which is what the SCC client's
---      Result Comment tab also displays.
--- WITH amended_atests AS (
---     SELECT DISTINCT h.ATEST_AA_ID
---     FROM V_P_LAB_TEST_RESULT_HISTORY h
---     WHERE h.MOD_DT >= SYSDATE - 30
---       AND h.TYPE   = 'RMOD'
---       AND h.MOD_TECH NOT IN ('HIS','SCC','AUTOV','RBS','I/AUT','AUTON')
--- )
--- SELECT
---     o.ID                                          AS accession,
---     pt.ID                                         AS mrn,
---     tr.TEST_NAME                                  AS test,
---     tr.AA_ID                                      AS atest_aa_id,
---     m.*                                          -- surface all msg cols
---                                                   --   so we can see TYPE/
---                                                   --   line-no/timestamp
---                                                   --   alongside text
--- FROM amended_atests aa
--- JOIN V_P_LAB_TEST_RESULT tr ON tr.AA_ID = aa.ATEST_AA_ID
--- JOIN V_P_LAB_ORDER       o  ON o.AA_ID  = tr.ORDER_AA_ID
--- JOIN V_P_LAB_STAY        st ON st.AA_ID = o.STAY_AA_ID
--- JOIN V_P_LAB_PATIENT     pt ON pt.AA_ID = st.PATIENT_AA_ID
--- JOIN V_P_LAB_MESSAGE     m  ON m.<test_result_fk> = tr.AA_ID
--- WHERE REGEXP_LIKE(pt.ID, '^E[0-9]+$')
---   AND tr.EDITED_FLAG = 'Y'
--- ORDER BY pt.ID, o.ID, tr.AA_ID;  -- add m.<line_no_col> when known
+--      Output sorted by patient/accession then by message line so multi-
+--      line comments render in the order the client shows them.
+WITH amended_atests AS (
+    SELECT DISTINCT h.ATEST_AA_ID
+    FROM V_P_LAB_TEST_RESULT_HISTORY h
+    WHERE h.MOD_DT >= SYSDATE - 30
+      AND h.TYPE   = 'RMOD'
+      AND h.MOD_TECH NOT IN ('HIS','SCC','AUTOV','RBS','I/AUT','AUTON')
+)
+SELECT
+    o.ID                                          AS accession,
+    pt.ID                                         AS mrn,
+    tr.TEST_NAME                                  AS test,
+    tr.AA_ID                                      AS atest_aa_id,
+    m.TEST_RESULT_SORT                            AS line_no,
+    m.TYPE                                        AS msg_type,
+    m.TECH_ID                                     AS msg_tech,
+    m.UPDATE_DT                                   AS msg_dt,
+    m.TEXT                                        AS msg_text
+FROM amended_atests aa
+JOIN V_P_LAB_TEST_RESULT tr ON tr.AA_ID = aa.ATEST_AA_ID
+JOIN V_P_LAB_ORDER       o  ON o.AA_ID  = tr.ORDER_AA_ID
+JOIN V_P_LAB_STAY        st ON st.AA_ID = o.STAY_AA_ID
+JOIN V_P_LAB_PATIENT     pt ON pt.AA_ID = st.PATIENT_AA_ID
+JOIN V_P_LAB_MESSAGE     m  ON m.TEST_RESULT_AA_ID = tr.AA_ID
+WHERE REGEXP_LIKE(pt.ID, '^E[0-9]+$')
+  AND tr.EDITED_FLAG = 'Y'
+ORDER BY pt.ID, o.ID, tr.AA_ID, m.TEST_RESULT_SORT;
 
 
--- 52c. Coverage cross-check (run after 52b is parameterized)
+-- 52c. Coverage cross-check
 --      How many of the RMOD-amended results in the 30-day cohort have
 --      ANY V_P_LAB_MESSAGE row? If coverage is near 0%, the table is a
 --      dead end for corrected-results enrichment. If meaningfully > 0%,
---      promote one of 52b's text columns to a column on
---      corrected_results_summary.sql (or its audit sibling).
--- SELECT
---     COUNT(DISTINCT aa.ATEST_AA_ID)                 AS amended_results,
---     COUNT(DISTINCT m.<test_result_fk>)             AS results_with_message,
---     ROUND(100 * COUNT(DISTINCT m.<test_result_fk>)
---                / NULLIF(COUNT(DISTINCT aa.ATEST_AA_ID), 0), 2)
---                                                    AS pct_with_message
--- FROM (
---     SELECT DISTINCT h.ATEST_AA_ID
---     FROM V_P_LAB_TEST_RESULT_HISTORY h
---     WHERE h.MOD_DT >= SYSDATE - 30
---       AND h.TYPE   = 'RMOD'
---       AND h.MOD_TECH NOT IN ('HIS','SCC','AUTOV','RBS','I/AUT','AUTON')
--- ) aa
--- LEFT JOIN V_P_LAB_MESSAGE m ON m.<test_result_fk> = aa.ATEST_AA_ID;
+--      promote m.TEXT to a column on corrected_results_summary.sql
+--      (or its audit sibling).
+SELECT
+    COUNT(DISTINCT aa.ATEST_AA_ID)                  AS amended_results,
+    COUNT(DISTINCT m.TEST_RESULT_AA_ID)             AS results_with_message,
+    ROUND(100 * COUNT(DISTINCT m.TEST_RESULT_AA_ID)
+               / NULLIF(COUNT(DISTINCT aa.ATEST_AA_ID), 0), 2)
+                                                    AS pct_with_message,
+    COUNT(m.AA_ID)                                  AS message_rows_total,
+    ROUND(COUNT(m.AA_ID)
+          / NULLIF(COUNT(DISTINCT m.TEST_RESULT_AA_ID), 0), 2)
+                                                    AS lines_per_result
+FROM (
+    SELECT DISTINCT h.ATEST_AA_ID
+    FROM V_P_LAB_TEST_RESULT_HISTORY h
+    WHERE h.MOD_DT >= SYSDATE - 30
+      AND h.TYPE   = 'RMOD'
+      AND h.MOD_TECH NOT IN ('HIS','SCC','AUTOV','RBS','I/AUT','AUTON')
+) aa
+LEFT JOIN V_P_LAB_MESSAGE m ON m.TEST_RESULT_AA_ID = aa.ATEST_AA_ID;
+
+
+-- 52d. TYPE enum + TECH_ID system-identity profile
+--      52a showed TYPE is CHAR 1 — surface its distribution so we can
+--      decode (likely a category code; SoftReports docs reference
+--      A/I/R/S for internal notes but this is the result-comment-line
+--      table, so the enum may differ). Also profile TECH_ID for the
+--      same system-vs-human breakout we did on MOD_TECH in §42 — the
+--      dump in 52b may want to filter system-authored comments out
+--      depending on what the user-facing comparison needs.
+SELECT
+    TYPE,
+    COUNT(*)                                       AS row_count,
+    COUNT(DISTINCT TEST_RESULT_AA_ID)              AS distinct_results,
+    ROUND(AVG(LENGTH(TEXT)), 0)                    AS avg_text_len,
+    MAX(LENGTH(TEXT))                              AS max_text_len
+FROM V_P_LAB_MESSAGE
+WHERE UPDATE_DT >= SYSDATE - 30
+GROUP BY TYPE
+ORDER BY row_count DESC;
+
+
+/* ----------------------------------------------------------------------------
+   53. V_P_LAB_ACT_HISTORY — order-amendment history discovery
+
+       Sibling history view to V_P_LAB_TEST_RESULT_HISTORY but at the order
+       level. CLAUDE.md notes V_P_LAB_ACT_HISTORY uses TYPE='MODCOM' only
+       (vs. the RMOD/DMOD/REVMOD vocabulary on result history). Discovery
+       probe ahead of authoring an order-amendments companion to
+       corrected_results_summary.sql.
+
+       Goals:
+         - Catalog columns and data types
+         - Verify TYPE enum (should be MODCOM-only per dict)
+         - Identify FK back to V_P_LAB_ORDER, timestamp column, author
+           column, narrative columns
+         - Determine which columns are vestigial (DATA_LENGTH = 0)
+         - Pick a viable join pattern for accession-level reporting
+
+       Run sequentially. 53a is self-contained; 53b/c/d are templated on
+       53a's output.
+   --------------------------------------------------------------------------- */
+
+-- 53a. Column inventory
+--      Run first. Identifies the FK to V_P_LAB_ORDER, the canonical
+--      timestamp column, the author column, and any text/CLOB columns.
+--
+--      Discoveries (verified 2026-04-30):
+--        - 8 columns total. PK=AA_ID. Much leaner than the 36-column
+--          V_P_LAB_TEST_RESULT_HISTORY.
+--        - FK to order is ORDER_AA_ID (NUMBER 22) → V_P_LAB_ORDER.AA_ID.
+--        - Canonical timestamp is MOD_DT (DATE). MOD_DATE/MOD_TIME are
+--          VARCHAR2 string components (10 and 5 chars respectively) —
+--          matches V_P_LAB_TEST_RESULT_HISTORY's stringified-pair
+--          convention.
+--        - Author is MOD_TECH (VARCHAR2 16) — same shape as on result
+--          history; the §42 system-identity exclusion list (HIS, SCC,
+--          AUTOV, RBS, I/AUT, AUTON) should apply here too.
+--        - Narrative is PREV_COMMENT (CLOB 4000) only. NO MOD_REASON
+--          column — order amendments don't carry an amender narrative.
+--        - TYPE is VARCHAR2 11. CLAUDE.md says MODCOM-only — verify
+--          in 53b.
+--        - All columns have non-zero DATA_LENGTH — no vestigial slots.
+--        - No "value before/after" axis (no PREV_RESULT analog) —
+--          orders don't have a single value to track. The companion
+--          summary query will be a thin "who/when/prior-comment"
+--          report, not a from→to one.
+SELECT
+    COLUMN_ID,
+    COLUMN_NAME,
+    DATA_TYPE,
+    DATA_LENGTH,
+    NULLABLE
+FROM ALL_TAB_COLUMNS
+WHERE TABLE_NAME = 'V_P_LAB_ACT_HISTORY'
+ORDER BY COLUMN_ID;
+
+
+-- 53b. Volume + TYPE distribution (30-day window)
+--      Expected per CLAUDE.md: TYPE = 'MODCOM' on 100% of rows. If any
+--      other value appears (or if we're surprised by RMOD/DMOD/etc.
+--      bleed-over), update CLAUDE.md's per-view TYPE-enum note.
+SELECT
+    TYPE,
+    COUNT(*)                                       AS row_count,
+    ROUND(100 * COUNT(*) / SUM(COUNT(*)) OVER (), 2)
+                                                   AS pct,
+    MIN(MOD_DT)                                    AS first_seen,
+    MAX(MOD_DT)                                    AS last_seen
+FROM V_P_LAB_ACT_HISTORY
+WHERE MOD_DT >= SYSDATE - 30
+GROUP BY TYPE
+ORDER BY row_count DESC;
+
+
+-- 53c. Population rates per column (30-day window)
+--      All 8 columns are real (no DATA_LENGTH=0). Sparse fields tell
+--      us which are workhorses for the companion summary query.
+SELECT
+    COUNT(*)                                       AS total_rows,
+    COUNT(AA_ID)                                   AS aa_id_pop,
+    COUNT(ORDER_AA_ID)                             AS order_aa_id_pop,
+    COUNT(TYPE)                                    AS type_pop,
+    COUNT(MOD_DATE)                                AS mod_date_pop,
+    COUNT(MOD_TIME)                                AS mod_time_pop,
+    COUNT(MOD_DT)                                  AS mod_dt_pop,
+    COUNT(MOD_TECH)                                AS mod_tech_pop,
+    -- COUNT() can't take a CLOB directly (ORA-00932) — wrap with
+    -- DBMS_LOB.GETLENGTH so the aggregate sees a NUMBER, and exclude
+    -- empty-string CLOBs while we're at it.
+    COUNT(CASE WHEN DBMS_LOB.GETLENGTH(PREV_COMMENT) > 0
+               THEN 1 END)                         AS prev_comment_pop
+FROM V_P_LAB_ACT_HISTORY
+WHERE MOD_DT >= SYSDATE - 30;
+
+
+-- 53d. Sample rows — content patterns + author identity
+--      ROWNUM idiom (no FETCH FIRST per project memory). Surface 5
+--      recent rows so we can eyeball the PREV_COMMENT format. Both
+--      raw and stripped versions surface so the regex's losslessness
+--      is verifiable.
+--
+--      Discoveries (verified 2026-04-30):
+--        - PREV_COMMENT uses a LIGHTER RTF wrapper than tr.COMMENTS:
+--          {\rtf1\ansi <body>} — no font-table or formatting prefix.
+--          Same stripper regex still works.
+--        - Authors are mostly 'HIS' (HIS-interface-generated comments
+--          on prompt responses / specimen-type/source). Occasional
+--          human tech codes (e.g., 'JTH') for manually-edited prep
+--          instructions.
+--        - Common content patterns:
+--            'Type^U^Urine^Source^CLCA^Urine, Clean Catch'
+--                — caret-delimited HIS form fields (HL7-style)
+--            '(*PTT): Draw 6 hours after start of Heparin Infusion'
+--                — order-prep instruction
+--            '(*CMP): Has the patient fasted?->No'
+--                — HIS prompt-response (matches V_P_LAB_INTERNAL_NOTE
+--                  NOTE_CATEGORY='I' content)
+SELECT
+    AA_ID,
+    ORDER_AA_ID,
+    MOD_DT,
+    MOD_TECH,
+    DBMS_LOB.SUBSTR(PREV_COMMENT, 4000, 1)         AS prev_comment_raw,
+    REGEXP_REPLACE(
+        REGEXP_REPLACE(DBMS_LOB.SUBSTR(PREV_COMMENT, 4000, 1),
+                       '\\[a-z0-9]+ ?', ' ', 1, 0, 'i'),
+        '\\\*|\{|\}', '', 1, 0, 'i')
+                                                   AS prev_comment_stripped
+FROM (
+    SELECT *
+    FROM V_P_LAB_ACT_HISTORY
+    WHERE MOD_DT >= SYSDATE - 7
+    ORDER BY MOD_DT DESC
+)
+WHERE ROWNUM <= 5;
