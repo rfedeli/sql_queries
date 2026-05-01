@@ -586,7 +586,7 @@ The numeric / DATE triple pattern (same as V_P_LAB_TUBE, V_P_LAB_CANCELLATION):
 | LOINC_CODE | VARCHAR2 40 | LOINC code for the test (denormalized; useful for HL7/ELR) |
 | TEST_NAME | VARCHAR2 59 | Test name (denormalized — skip V_S_LAB_TEST join when only displaying) |
 | REPORTED_TEST_NAME | VARCHAR2 30 | Display name for the test on the report |
-| INTERPRET_MSG / TEST_INFO_MSG / DELTA_CHECK_FAIL_MSG | VARCHAR2 5 | Reference codes to message templates |
+| INTERPRET_MSG / TEST_INFO_MSG / DELTA_CHECK_FAIL_MSG | VARCHAR2 5 | **Canned-message IDs the SCC report engine expands at print time** via `V_S_LAB_CANNED_MESSAGE.ID`. Verified 2026-05-01: `TEST_INFO_MSG` populated on ~13% of recently-amended results; `INTERPRET_MSG` and `DELTA_CHECK_FAIL_MSG` are 0% in that cohort. The canned message text (multi-line, ordered by `LINE_NUMBER`) renders on every printed report — original AND corrected — for results referencing the ID. **Source of "comments appearing on corrected reports that aren't in any comment column"**: the text isn't on the result row, only the 5-char pointer is. Propagated from setup-level `V_S_LAB_TEST.MES_TEST_COMMENT` |
 | COMMENTS | CLOB 4000 | Test result comments (PHI-adjacent free text) |
 | SPECIMEN_TYPE | VARCHAR2 8 | Specimen type |
 
@@ -915,6 +915,20 @@ The 10 false-positive hits in `tr.COMMENTS` revealed two operational patterns wo
 
 1. **`tr.COMMENTS` is RTF-formatted, not plain text** — comment bodies start with `{\rtf1\ansi\deff0\nouicompat{\fonttbl{\f0\fnil Courier New;}}...` followed by `\pard\f0\fs20\lang1033 <body text>\par\n}`. Displaying COMMENTS verbatim shows the raw RTF wrapper. For human-readable display, strip via `REGEXP_REPLACE(c, '\\[a-z0-9]+ ?|\{|\}|\\par', '', 'i')` (lossy but acceptable for narrative).
 2. **Critical-callback documentation pattern** — when a corrected result requires physician notification, techs write narrative into `tr.COMMENTS` with idioms like "Corrected result called to Dr. X on DATE TIME" or "Corrected results, notified Dr. Y by Z DATE TIME". This is queryable as a "corrections-with-callback-documentation" surface — case-insensitive `tr.COMMENTS LIKE '%Corrected%'` on `STATE='Corrected'` rows, with the RTF stripper above for display.
+
+#### Test-info canned messages (the "comments on corrected reports we couldn't find")
+
+A separate source of comment text on printed reports — **not stored on the result row at all**, only a 5-char pointer is. Verified 2026-05-01:
+
+The SCC report engine joins `V_P_LAB_TEST_RESULT.TEST_INFO_MSG` (and the rarer `INTERPRET_MSG` / `DELTA_CHECK_FAIL_MSG`) to `V_S_LAB_CANNED_MESSAGE.ID` at print time and renders the multi-line text below the result. These canned messages are configured at the **test-setup level** in `V_S_LAB_TEST.MES_TEST_COMMENT` and propagate onto every result of that test as `tr.TEST_INFO_MSG`.
+
+Coverage on the RMOD-amended cohort (last 30 days):
+- `tr.TEST_INFO_MSG` populated on **~13%** of amended results
+- `tr.INTERPRET_MSG` and `tr.DELTA_CHECK_FAIL_MSG` are 0% in that cohort (vestigial / rarely used)
+
+**Worked example**: `MES_TEST_COMMENT='TGLUF'` is set on `GLU` (Glucose) at all 6 chem facilities (TCHEM/JCHEM/FCHEM/WCHEM/ECHEM/CCHEM) and `GLUCF` (Glucose Fasting) at 4 of 6. The canned message text is a 6-line ADA reference-range block: "American Diabetes Association Reference Ranges: -- Normal Adult: 70-99 mg/dL -- Impaired Fasting Glucose: 100-125 mg/dL -- Diabetes: ≥126 mg/dL -- Recommend repeat testing for confirmatory diagnosis of diabetes." Prints on every glucose report — original AND corrected, since the pointer is on the live result row regardless of amendment state.
+
+Implication for "I see this comment on the corrected report but can't find it via SQL searches": the comment isn't correction-specific and isn't in any result-comment column. It's a 5-char ID on the result row pointing to multi-line text in the canned-message library.
 
 #### Sibling live-row signals on V_P_LAB_TEST_RESULT
 
@@ -2250,7 +2264,7 @@ PDF flagged these as "additional columns" beyond the workhorse set; all are popu
 | IS_PRINT_LBL_PROMPT_RESULT | VARCHAR2 1 | Print prompt-test result on labels flag |
 | HOLD_AUTOVERIF | VARCHAR2 1 | Hold autoverification (legacy short name) |
 | HOLD_AUTOVERIFICATION | VARCHAR2 1 | **Duplicate of HOLD_AUTOVERIF** — both populated, both adjacent (cols 175/176). Pick HOLD_AUTOVERIFICATION for the modern form |
-| MES_TEST_COMMENT | VARCHAR2 5 | Test comment message ID (FK by code → V_S_LAB_CANNED_MESSAGE) |
+| MES_TEST_COMMENT | VARCHAR2 5 | **Test comment message ID — SCC report engine prints this canned message on every result of this test** (FK by code → `V_S_LAB_CANNED_MESSAGE.ID`). Configured per (test, department/workstation) — same test can carry different canned messages at different facilities. Propagates to `V_P_LAB_TEST_RESULT.TEST_INFO_MSG` on each result row. Worked example (verified 2026-05-01): `MES_TEST_COMMENT='TGLUF'` is set on `GLU` (6 rows, all 6 chem facilities) and `GLUCF` (4 rows, missing FCHEM/CCHEM); the canned message renders the ADA glucose reference ranges as a 6-line block on every glucose report. **This is the source of "extra comments on corrected reports" — they're not correction-specific, they print on original reports too** |
 | FL_CALC_NEEDS_RMOD | VARCHAR2 1 | Calculated test needs RMOD-style amendment when components change |
 | FL_DO_NOT_MERGE_ST_ORDERS | VARCHAR2 1 | Standing-order merge suppression |
 | FL_MANUAL_MERGE_DO_NOT_MERGE | VARCHAR2 1 | Manual-merge suppression |
