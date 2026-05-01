@@ -95,7 +95,9 @@ LEFT JOIN V_P_LAB_INTERNAL_NOTE n2 ON n2.ORDER_AA_ID       = c.ORDER_AA_ID;
    dumps every reachable comment column side-by-side so you can compare
    the SCC client's printed report against the database content.
 
-   Six sub-queries — execute sequentially:
+   Sub-queries — execute sequentially:
+     §B.0  Lookup helper: order# -> ATEST_AA_IDs (run if you don't have the
+           ATEST_AA_ID directly; bind :ORDER_ID instead of :ATEST_AA_ID)
      §B.1  V_P_LAB_MESSAGE rows for this result (multi-line, ordered)
      §B.2  V_P_LAB_INTERNAL_NOTE rows for the result + parent order + tube
      §B.3  Live tr.COMMENTS (RTF — display raw, eyeball the wrapper)
@@ -103,6 +105,32 @@ LEFT JOIN V_P_LAB_INTERNAL_NOTE n2 ON n2.ORDER_AA_ID       = c.ORDER_AA_ID;
      §B.5  Amendment history (so you can see if a comment got added at MOD_DT)
      §B.6  Test-setup-level canned-message ref (V_S_LAB_TEST.MES_TEST_COMMENT)
    --------------------------------------------------------------------------- */
+
+-- §B.0 — Order-number lookup helper
+--        Bind :ORDER_ID to a SoftLab order number (e.g. 'C424003176'). Returns
+--        every ATEST_AA_ID on the order with amendment status + COMMENTS
+--        length so you can pick the row to deep-dive on. The candidate row
+--        is typically the one with EDITED_FLAG='Y' AND STATE='Corrected' AND
+--        TR_COMMENTS_LEN IS NOT NULL.
+SELECT
+    tr.AA_ID                                          AS atest_aa_id,
+    tr.TEST_ID,
+    tr.GROUP_TEST_ID,
+    tr.TEST_NAME,
+    tr.STATE,
+    tr.EDITED_FLAG,
+    tr.RESULT,
+    tr.VERIFIED_DT,
+    (SELECT COUNT(*) FROM V_P_LAB_TEST_RESULT_HISTORY h
+     WHERE h.ATEST_AA_ID = tr.AA_ID)                  AS amendment_count,
+    CASE WHEN tr.COMMENTS IS NOT NULL
+              AND DBMS_LOB.GETLENGTH(tr.COMMENTS) > 0
+         THEN DBMS_LOB.GETLENGTH(tr.COMMENTS) END     AS tr_comments_len
+FROM V_P_LAB_TEST_RESULT tr
+JOIN V_P_LAB_ORDER       o  ON o.AA_ID = tr.ORDER_AA_ID
+WHERE o.ID = :ORDER_ID
+ORDER BY tr.TEST_ID;
+
 
 -- §B.1 — V_P_LAB_MESSAGE rows for this result
 SELECT
@@ -332,39 +360,205 @@ ORDER BY 2 DESC;
 
 
 /* ----------------------------------------------------------------------------
-   §D — Optional: timing correlation
+   §D — Did tr.COMMENTS change at correction time?
 
-   For RMOD-amended results that DO have a V_P_LAB_MESSAGE row, what's the
-   typical gap between amendment time (MOD_DT) and message-update time
-   (UPDATE_DT)? If most are within ±15 minutes, that's strong evidence
-   the comment is added at correction time and surfaces on the printed
-   corrected report.
+   For RMOD-amended results, compare the live tr.COMMENTS against the latest
+   amendment's snapshotted h.PREV_COMMENT. Three buckets:
+
+     same       — comment text unchanged since the last amendment
+     changed    — comment text differs (live updated since the amendment)
+     null_both  — neither populated
+
+   High "changed" rate = strong evidence that techs ARE editing tr.COMMENTS
+   at correction time, making it the de-facto RMOD-attached comment store
+   that surfaces on the printed corrected report.
+
+   Comparison uses DBMS_LOB.COMPARE since both columns are CLOBs.
    --------------------------------------------------------------------------- */
-WITH amended AS (
-    SELECT h.ATEST_AA_ID, MIN(h.MOD_DT) AS first_mod_dt
+WITH latest_mod AS (
+    SELECT
+        h.ATEST_AA_ID,
+        h.MOD_DT,
+        h.PREV_COMMENT,
+        ROW_NUMBER() OVER (PARTITION BY h.ATEST_AA_ID
+                           ORDER BY h.MOD_DT DESC, h.AA_ID DESC) AS rn
     FROM V_P_LAB_TEST_RESULT_HISTORY h
     WHERE h.MOD_DT >= SYSDATE - 30
       AND h.TYPE   = 'RMOD'
       AND h.MOD_TECH NOT IN ('HIS','SCC','AUTOV','RBS','I/AUT','AUTON')
-    GROUP BY h.ATEST_AA_ID
 )
 SELECT
     CASE
-        WHEN ABS(m.UPDATE_DT - a.first_mod_dt) * 24 * 60 <= 15  THEN '0_within_15m'
-        WHEN ABS(m.UPDATE_DT - a.first_mod_dt) * 24       <= 1   THEN '1_within_1h'
-        WHEN ABS(m.UPDATE_DT - a.first_mod_dt)            <= 1   THEN '2_within_1d'
-        WHEN m.UPDATE_DT < a.first_mod_dt                       THEN '3_before_amendment'
-        ELSE                                                         '4_after_1d'
-    END                                                           AS bucket,
-    COUNT(*)                                                      AS rows_count
-FROM amended a
-JOIN V_P_LAB_MESSAGE m ON m.TEST_RESULT_AA_ID = a.ATEST_AA_ID
+        WHEN tr.COMMENTS IS NULL AND lm.PREV_COMMENT IS NULL THEN 'null_both'
+        WHEN tr.COMMENTS IS NULL AND lm.PREV_COMMENT IS NOT NULL THEN 'live_null_prev_set'
+        WHEN tr.COMMENTS IS NOT NULL AND lm.PREV_COMMENT IS NULL THEN 'live_set_prev_null'
+        WHEN DBMS_LOB.COMPARE(tr.COMMENTS, lm.PREV_COMMENT) = 0 THEN 'same'
+        ELSE 'changed'
+    END                                                  AS bucket,
+    COUNT(*)                                             AS amended_results,
+    ROUND(100 * COUNT(*) / SUM(COUNT(*)) OVER (), 2)     AS pct
+FROM latest_mod lm
+JOIN V_P_LAB_TEST_RESULT tr ON tr.AA_ID = lm.ATEST_AA_ID
+WHERE lm.rn = 1
 GROUP BY
     CASE
-        WHEN ABS(m.UPDATE_DT - a.first_mod_dt) * 24 * 60 <= 15  THEN '0_within_15m'
-        WHEN ABS(m.UPDATE_DT - a.first_mod_dt) * 24       <= 1   THEN '1_within_1h'
-        WHEN ABS(m.UPDATE_DT - a.first_mod_dt)            <= 1   THEN '2_within_1d'
-        WHEN m.UPDATE_DT < a.first_mod_dt                       THEN '3_before_amendment'
-        ELSE                                                         '4_after_1d'
+        WHEN tr.COMMENTS IS NULL AND lm.PREV_COMMENT IS NULL THEN 'null_both'
+        WHEN tr.COMMENTS IS NULL AND lm.PREV_COMMENT IS NOT NULL THEN 'live_null_prev_set'
+        WHEN tr.COMMENTS IS NOT NULL AND lm.PREV_COMMENT IS NULL THEN 'live_set_prev_null'
+        WHEN DBMS_LOB.COMPARE(tr.COMMENTS, lm.PREV_COMMENT) = 0 THEN 'same'
+        ELSE 'changed'
     END
-ORDER BY 1;
+ORDER BY 2 DESC;
+
+
+/* ----------------------------------------------------------------------------
+   §F — V_P_LAB_MESSAGE distribution (system-wide, no filters)
+
+   Tests the SCC tag-vocabulary text file's claim that DIFF/RMOD/TRMOD/REVU/
+   etc. are "tags used in the Messages table." §A coverage probe found 0
+   V_P_LAB_MESSAGE rows on the RMOD-amended cohort, but our cohort was
+   RMOD-only — V_P_LAB_MESSAGE may be active for non-result events
+   (TADD, OCANC, SCANC, demographic edits) that we'd miss.
+
+   Run §F.1 first (TYPE distribution — single CHAR column, narrow); then
+   §F.2 (text-prefix scan — looks for tag IDs at the leading edge of TEXT,
+   the only candidate location since TYPE is too narrow at CHAR(1)).
+
+   Note: V_P_LAB_MESSAGE is a CLOB-bearing view; the SUBSTR in §F.2 forces
+   a CLOB-to-VARCHAR2 cast which Oracle handles for SUBSTR up to 4000 chars.
+   --------------------------------------------------------------------------- */
+
+-- §F.1 — TYPE column cardinality (CHAR 1)
+SELECT
+    TYPE,
+    COUNT(*)                                       AS row_count,
+    COUNT(DISTINCT TEST_RESULT_AA_ID)              AS distinct_results,
+    MIN(UPDATE_DT)                                 AS earliest,
+    MAX(UPDATE_DT)                                 AS latest
+FROM V_P_LAB_MESSAGE
+GROUP BY TYPE
+ORDER BY 2 DESC;
+
+
+-- §F.2 — Leading-text profiling (top 30 prefixes of TEXT)
+--        If SCC's tag descriptions ("Result Changes", "Comment Difference",
+--        etc.) appear in this table, they'd show up as the leading text on
+--        rows. Bucket by first 12 chars to catch tag-style prefixes.
+SELECT * FROM (
+    SELECT
+        SUBSTR(TEXT, 1, 12)                        AS leading_text,
+        COUNT(*)                                   AS row_count
+    FROM V_P_LAB_MESSAGE
+    WHERE TEXT IS NOT NULL
+    GROUP BY SUBSTR(TEXT, 1, 12)
+)
+ORDER BY 2 DESC
+FETCH FIRST 30 ROWS ONLY;
+
+
+/* ----------------------------------------------------------------------------
+   §G — MES_TEST_COMMENT vocabulary survey
+
+   Catalogue every distinct canned-message ID configured at test setup
+   level. Output is a reference for "what disclaimer prints on what
+   test." Sorted by sharing breadth (test_count DESC) so the most-shared
+   canned-text blocks float to the top.
+
+   Joins LINE_NUMBER=0 in the LEFT JOIN to get the first-line length only;
+   NULL max_canmsg_len means the canned message has no LINE_NUMBER=0 row
+   (the message starts at line 1+, OR the rows are inactive/expired —
+   §I + §J resolve which).
+   --------------------------------------------------------------------------- */
+SELECT
+    t.MES_TEST_COMMENT,
+    COUNT(DISTINCT t.ID)                                         AS test_count,
+    MAX(LENGTH(msg.TEXT))                                        AS max_canmsg_len
+FROM V_S_LAB_TEST t
+LEFT JOIN V_S_LAB_CANNED_MESSAGE msg
+       ON msg.ID = t.MES_TEST_COMMENT
+      AND msg.LINE_NUMBER = 0
+WHERE t.MES_TEST_COMMENT IS NOT NULL
+GROUP BY t.MES_TEST_COMMENT
+ORDER BY test_count DESC;
+
+
+/* ----------------------------------------------------------------------------
+   §H — Full-body dump for top-sharer canned messages
+
+   Once §G surfaces the most-shared MES_TEST_COMMENT IDs, dump the complete
+   multi-line text for those IDs. Bind :CANMSG_IDS to a comma-separated
+   list (or rewrite as a hardcoded IN list for ad-hoc runs).
+
+   Verified output for top-7 sharers (run 2026-05-02 — TNREF/TCTGC/TBGRR/
+   THLB/TMRRB/TMRRJ/TMRRF):
+   - All seven are clinical disclaimers (body-fluid ref-range, population
+     validity, manufacturer/method). Not correction-specific.
+   - TMRRB shows LINE_NUMBERs 0,1,3,4,5 — line 2 missing. Confirms
+     canned messages can have skipped/blank lines; do NOT assume
+     consecutive line numbering when rendering.
+   - TMRRJ has lines 0-6 with line 3 blank (intentional spacing).
+   --------------------------------------------------------------------------- */
+SELECT
+    m.ID,
+    m.LINE_NUMBER,
+    m.ACTIVE,
+    m.EXP_DT,
+    m.TEXT
+FROM V_S_LAB_CANNED_MESSAGE m
+WHERE m.ID IN ('TNREF','TCTGC','TBGRR','TMRRB','TMRRJ','TMRRF','THLB')
+ORDER BY m.ID, m.LINE_NUMBER;
+
+
+/* ----------------------------------------------------------------------------
+   §I — Orphan-reference audit
+
+   Find tests whose MES_TEST_COMMENT points at a canned-message ID that
+   has NO matching row in V_S_LAB_CANNED_MESSAGE. Returns 0 rows = clean
+   compendium. Returns rows = configuration drift; those tests have
+   pointers to deleted/missing canned messages.
+
+   Verified 2026-05-02: 0 rows. Test compendium is well-maintained at
+   the existence level. (For staleness — expired/inactive canned messages
+   that exist but won't render — see §J.)
+   --------------------------------------------------------------------------- */
+SELECT DISTINCT t.MES_TEST_COMMENT
+FROM V_S_LAB_TEST t
+WHERE t.MES_TEST_COMMENT IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM V_S_LAB_CANNED_MESSAGE m
+      WHERE m.ID = t.MES_TEST_COMMENT
+  );
+
+
+/* ----------------------------------------------------------------------------
+   §J — Stale-reference audit (line-0 missing / inactive / expired)
+
+   §G's NULL max_canmsg_len entries (canned-message IDs with no LINE_NUMBER=0
+   row in V_S_LAB_CANNED_MESSAGE) might be:
+   - Multi-line starting at line 1 (intentional)
+   - Inactive (ACTIVE='N')
+   - Expired (EXP_DT < SYSDATE)
+   - Empty TEXT on line 0
+
+   §I confirmed they're not orphans (rows exist for the ID); this probe
+   shows their actual state. Bind :CANMSG_IDS to the list of IDs that
+   came back NULL from §G; the example list below is from the 2026-05-02
+   run (THCV, THBAG, THBSB, etc. — adjust as needed).
+
+   The :SYSDATE comparison handles expiry: rows with EXP_DT < SYSDATE
+   exist but won't render on reports.
+   --------------------------------------------------------------------------- */
+SELECT
+    m.ID,
+    m.LINE_NUMBER,
+    m.ACTIVE,
+    CASE WHEN m.EXP_DT < SYSDATE THEN 'EXPIRED'
+         WHEN m.EXP_DT IS NULL    THEN 'no expiry'
+         ELSE 'current'
+    END                                            AS exp_status,
+    SUBSTR(m.TEXT, 1, 60)                          AS text_preview
+FROM V_S_LAB_CANNED_MESSAGE m
+WHERE m.ID IN ('THCV','THBAG','THBSB','TVLPA','THBCT','TSTGA','THCGD',
+               'THAVM','THAV2','THBCM','TT4MT','TFT3')
+ORDER BY m.ID, m.LINE_NUMBER;
