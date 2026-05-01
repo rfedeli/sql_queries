@@ -13,7 +13,7 @@ Each diagram shows **PK + FK + key filter columns only** — for full column det
 6. [SoftLab Test Setup / Compendium Hierarchy](#6-softlab-test-setup--compendium-hierarchy)
 7. [Specimen Tracking (SPTR) Cluster](#7-specimen-tracking-sptr-cluster)
 8. [Order Decorator Reference Graph](#8-order-decorator-reference-graph)
-9. [Microbiology (SoftMic) Cluster — preliminary](#9-microbiology-softmic-cluster--preliminary)
+9. [Microbiology (SoftMic) Cluster](#9-microbiology-softmic-cluster)
 10. [Instrument Interface Map](#10-instrument-interface-map)
 11. [Order Lifecycle Timeline](#11-order-lifecycle-timeline)
 
@@ -367,6 +367,7 @@ How a single patient encounter spans Lab, Blood Bank, and AR via shared identifi
 erDiagram
     V_P_LAB_ORDER ||--o{ V_P_BB_BB_Order : "ORDER.ID = ORDERNO (P-type only)"
     V_P_LAB_ORDER ||--o{ V_P_ARE_VISIT : "ORDER.ID = VTORGORDNUM"
+    V_P_LAB_ORDER ||--o{ V_P_MIC_ACTIVE_ORDER : "AA_ID = ACTIVE_AA_ID (micro orders)"
     V_P_LAB_ORDERED_TEST ||--o{ V_P_BB_BB_Order : "OT.ORDER_NO = ORDERNO (P-type only)"
     V_P_LAB_STAY ||--o{ V_P_LAB_MISCEL_INFO : "STAY.BILLING = OWNER_ID"
 
@@ -394,6 +395,12 @@ erDiagram
         VARCHAR VTORGORDNUM "= V_P_LAB_ORDER.ID"
         VARCHAR VTREFNO "AR invoice number"
     }
+    V_P_MIC_ACTIVE_ORDER {
+        NUMBER AA_ID PK
+        NUMBER ACTIVE_AA_ID FK "= V_P_LAB_ORDER.AA_ID 100pct populated"
+        VARCHAR ORDER_NUMBER "human-readable order#"
+        VARCHAR ORDER_STATUS "computed CASE FINAL CANCELLED PRELIM INTERIM PENDING"
+    }
     V_P_LAB_MISCEL_INFO {
         NUMBER AA_ID PK
         VARCHAR OWNER_ID "= V_P_LAB_STAY.BILLING"
@@ -408,9 +415,10 @@ erDiagram
   2. **Epic CSN** (`V_P_LAB_STAY.BILLING`, VARCHAR2 23, ~9-digit numeric) — denormalized to `V_P_LAB_ORDER.BILLING`. Unique per stay, never null
   3. **AR invoice number** (`V_P_ARE_VISIT.VTREFNO`) — separate from CSN, internal to billing
 - **`V_P_LAB_MISCEL_INFO` is keyed by Epic CSN** (`OWNER_ID = STAY.BILLING`) — used to attach arbitrary HIS-pushed metadata to a stay (e.g., expected discharge date)
-- **One Epic CSN can produce multiple lab orders** (each with its own `V_P_LAB_ORDER.ID`); each lab order maps 1:1 to at most one BB order and 1:1 to at most one AR visit
+- **One Epic CSN can produce multiple lab orders** (each with its own `V_P_LAB_ORDER.ID`); each lab order maps 1:1 to at most one BB order, 1:1 to at most one AR visit, and 1:1 to at most one micro order
 - **Same `BILLING` value lives on both `STAY` and `ORDER`** — same identifier, denormalized for query convenience. Querying for CSN context can stop at either level
 - **Lab ↔ BB cross-link only fires for `ORDER_TYPE='P'`** — ~80% of BB orders link back to a SoftLab order (patient-context). The other ~20% are inventory orders (`ORDER_TYPE='I'`: donor processing, unit operations, QC) with no Lab counterpart. INNER JOIN on ORDERNO silently drops the inventory side; use LEFT JOIN or filter `ORDER_TYPE` explicitly
+- **Lab ↔ MIC cross-link fires for ALL micro orders** — `V_P_MIC_ACTIVE_ORDER.ACTIVE_AA_ID` is 100% populated, no orphans (verified 2026-05-01). ~430 micro orders/day = ~6.7% of total order volume. INNER JOIN is safe with no row loss. Use this view as the order-grain entry point to micro work; for test-grain detail, traverse to `V_P_MIC_TEST`
 
 ---
 
@@ -697,26 +705,52 @@ erDiagram
 
 ---
 
-## 9. Microbiology (SoftMic) Cluster — preliminary
+## 9. Microbiology (SoftMic) Cluster
 
-> ⚠️ **Preliminary diagram — relationships inferred from view names; not directly verified.** Most MIC FK columns are not yet documented at the column level in the dictionary. Treat this as a starting point for query design; verify joins with discovery probes before relying on them in production reports.
+The micro module overlays culture / isolate / sensitivity detail on top of the standard SoftLab order chain. Comment views form their own family — 7 grain-specific tables sharing a common comment skeleton (one is vestigial). Cross-module FK and comment-family FKs verified 2026-05-01.
 
 ```mermaid
 erDiagram
+    V_P_LAB_ORDER ||--o{ V_P_MIC_ACTIVE_ORDER : "AA_ID = ACTIVE_AA_ID 100pct"
     V_P_MIC_ACTIVE_ORDER ||--o{ V_P_MIC_TEST : "has tests"
+    V_P_MIC_ACTIVE_ORDER ||--o{ V_P_MIC_ORDER_COMM : "order-level comments"
     V_P_MIC_TEST ||--o{ V_P_MIC_ISOLATE : "yields isolates"
     V_P_MIC_ISOLATE ||--o{ V_P_MIC_SENSI : "drug sensitivities"
     V_P_MIC_TEST ||--o{ V_P_MIC_MEDIA : "plated on"
-    V_P_MIC_TEST ||--o{ V_P_MIC_TESTCOMM : "test comments"
-    V_P_MIC_ISOLATE ||--o{ V_P_MIC_ISOCOMM : "isolate comments"
-    V_P_MIC_SENSI ||--o{ V_P_MIC_THERAPYCOMM : "drug comments"
-    V_P_MIC_MEDIA ||--o{ V_P_MIC_MEDIACOMM : "media comments"
+    V_P_MIC_TEST ||--o{ V_P_MIC_TESTCOMM : "test comments 6.3M rows"
+    V_P_MIC_ISOLATE ||--o{ V_P_MIC_ISOCOMM : "isolate comments 2M rows"
+    V_P_MIC_SENSI ||--o{ V_P_MIC_THERAPYCOMM : "drug comments 44K rows"
+    V_P_MIC_MEDIA ||--o{ V_P_MIC_MEDIACOMM : "media comments 3.4M rows"
     V_P_MIC_ISOLATE }o--|| V_S_MIC_ORGANISM : "organism code"
     V_P_MIC_SENSI }o--|| V_S_MIC_DRUG : "drug code"
     V_P_MIC_TEST }o--|| V_S_MIC_SOURCE : "source code"
     V_S_MIC_ORGANISM ||--o{ V_S_MIC_ORGANISM_CLASS : "class links"
     V_S_MIC_DRUG ||--o{ V_S_MIC_DRUG_CLASS : "class links"
 
+    V_P_MIC_ACTIVE_ORDER {
+        NUMBER AA_ID PK
+        NUMBER ACTIVE_AA_ID FK "= V_P_LAB_ORDER.AA_ID"
+        VARCHAR ORDER_NUMBER
+        VARCHAR ORDER_STATUS "computed CASE FINAL CANCELLED PRELIM INTERIM PENDING"
+        DATE COLL_DT
+        DATE FINAL_DT
+    }
+    V_P_MIC_ORDER_COMM {
+        NUMBER AA_ID PK
+        NUMBER ACTIVE_ORDER_AA_ID FK
+        VARCHAR TEXT
+        CHAR TYPE
+        VARCHAR TECHNIK
+        DATE MOD_DT
+    }
+    V_P_MIC_TESTCOMM {
+        NUMBER AA_ID PK
+        NUMBER TEST_AA_ID FK
+        VARCHAR TEXT
+        VARCHAR TECH_ID
+        VARCHAR TECHNIK "legacy duplicate"
+        DATE MOD_DT
+    }
     V_S_MIC_ORGANISM {
         NUMBER AA_ID PK
         VARCHAR ID
@@ -733,13 +767,23 @@ erDiagram
     }
 ```
 
-**Operational notes (preliminary)**
-- **Verification needed for all FK columns** — the join keys for `V_P_MIC_TEST → V_P_MIC_ACTIVE_ORDER`, `V_P_MIC_ISOLATE → V_P_MIC_TEST`, `V_P_MIC_SENSI → V_P_MIC_ISOLATE`, etc. are inferred from naming conventions, not directly probed. Run a discovery probe before writing production queries.
+**Operational notes**
+- **Cross-module FK is verified 100% populated**: `V_P_MIC_ACTIVE_ORDER.ACTIVE_AA_ID = V_P_LAB_ORDER.AA_ID`. Every micro order has a SoftLab parent; INNER JOIN is safe.
+- **`V_P_MIC_ACTIVE_ORDER` is order-grain** (one row per V_P_LAB_ORDER); `V_P_MIC_TEST` is test-grain. Use ACTIVE_ORDER for order-level questions, TEST for component-level questions.
+- **`ORDER_STATUS` is a computed CASE** column (not stored): values are `FINAL` (~70%), `CANCELLED` (~12%), `PRELIM` (~10%), `INTERIM` (~6%), `PENDING` (~3%). Lifecycle: PENDING → PRELIM → INTERIM → FINAL (or CANCELLED at any point).
+- **`TEST_STATUS` does NOT exist on V_P_MIC_ACTIVE_ORDER** despite PDF claim — likely lives on V_P_MIC_TEST. Refuted PDF claim.
+- **Cancellation fan-out applies to micro tests too** — see diagram #2; `V_P_LAB_CANCELLATION.ORDERED_TEST_AA_ID` covers cancelled cultures.
+- **Comment-view family — 7 views, one vestigial**:
+  - 4 grain-specific views shown above (TESTCOMM, ISOCOMM, MEDIACOMM, THERAPYCOMM) carry the workhorse volume (~11.78M rows total)
+  - V_P_MIC_ORDER_COMM (14K rows) is the **live** order-level comment view
+  - **V_P_MIC_COMM is vestigial — 0 rows, dead twin of ORDER_COMM** (identical schema). Don't query it.
+  - V_P_MIC_COMMON_MEDIACOMM (~2K rows) is **test-grain despite the misleading "MEDIACOMM" suffix** — its FK is TEST_AA_ID, not MEDIA_AA_ID. Possibly a canned-text library; semantics ambiguous.
+- **Three author-column conventions across the comment family**: `TECHNIK` only (order-level + COMMON_MEDIACOMM); `TECH_ID + TECHNIK` (test/iso/media); `TECHNIK_ID + TECHNIK` (therapy). Pick the modern column where present.
 - **Organism type is derived from classification flags** on `V_S_MIC_ORGANISM`, not a single TYPE column: `Q_VIRUS` / `O1VIRUS` (virus), `R_FUNGI` (fungus, includes yeasts like Candida), `A_GRAMPOS` / `B_GRAMNEG` / `C_GRAMVAR` (gram stain), `N_COCUS` / `O_BACILLUS` (morphology).
 - **Genus / species are not stored separately** — parse from `V_S_MIC_ORGANISM.NAME` with `REGEXP_SUBSTR` if needed.
 - **Sensitivity panel flags** on `V_S_MIC_ORGANISM` (single-letter columns S, T, U, V, W, X, Y, Z, A1–Z1, etc.) determine which drug panels apply to that organism — schema-heavy but undocumented at column level.
-- **Cross-link to SoftLab**: micro orders share the same `V_P_LAB_ORDER` ancestry as chem/heme orders — micro-flagged orders carry `V_P_LAB_ORDER.BACTITEST = 'Y'`. Component results land in `V_P_LAB_TEST_RESULT` like normal; the MIC views overlay culture / isolate / sensitivity detail on top.
-- **Cancellation fan-out applies to micro tests too** — see diagram #2; `V_P_LAB_CANCELLATION.ORDERED_TEST_AA_ID` covers cancelled cultures.
+- **Cross-link to SoftLab**: micro-flagged orders also carry `V_P_LAB_ORDER.BACTITEST = 'Y'`; component results land in `V_P_LAB_TEST_RESULT` like normal. The MIC views overlay culture/isolate/sensitivity detail on top.
+- **Schema-preserved typos in V_P_MIC_ACTIVE_ORDER**: `ISOLATEION` (use `ISOLATION`), `PATHEVIEW_*` (missing R, both columns ARE the typo'd form).
 
 ---
 
@@ -749,7 +793,8 @@ How interfaced analyzers (chemistry, hematology, micro, molecular) and HIS infra
 
 ```mermaid
 erDiagram
-    V_S_INST_INSTRUMENT }o--|| V_S_LAB_WORKSTATION : "ORD/RES_WORKSTATION_ID"
+    V_S_INST_INSTRUMENT ||--o{ V_S_INST_WORKSTATIONS : "M:M bridge via INSTRUMENT_AA_ID"
+    V_S_INST_WORKSTATIONS }o--|| V_S_LAB_WORKSTATION : "WORKSTATION = ws.ID"
     V_S_LAB_WORKSTATION }o--|| V_S_LAB_DEPARTMENT : "DEPARTMENT_ID"
     V_S_LAB_WORKSTATION }o--|| V_S_LAB_LOCATION : "LOCATION_ID"
     V_S_INST_INSTRUMENT ||--o{ V_S_INST_PARAMETERS : "config params"
@@ -763,14 +808,20 @@ erDiagram
         VARCHAR ID "TREM TCEPH TALIN etc"
         VARCHAR NAME "Remisol Cepheid Alinity etc"
         VARCHAR ACTIVE "Y A N"
-        VARCHAR ORD_WORKSTATION_ID FK "where orders route"
-        VARCHAR RES_WORKSTATION_ID FK "where results post"
+        VARCHAR ORD_WORKSTATION_ID FK "where orders route (denorm primary)"
+        VARCHAR RES_WORKSTATION_ID FK "where results post (denorm primary)"
         VARCHAR INSTRUMENT_TYPE "CHEMISTRY HEMATOLOGY MICRO HIS"
         VARCHAR INSTRUMENT_FLAG "BI_MSG BI_NO_MSQ UNI_LDL etc"
         VARCHAR LISTN_NAME "GenInst astmGen genref etc"
         VARCHAR PORT_NAME "tty TCP socket or middleware ref"
         VARCHAR DIR_NAME "I/TREM I/QUEST I/AUTO etc"
         VARCHAR LOADL_FILE "dbildl = bidirectional"
+    }
+    V_S_INST_WORKSTATIONS {
+        NUMBER AA_ID PK
+        VARCHAR INSTRUMENT_ID FK "by code"
+        VARCHAR WORKSTATION FK "= V_S_LAB_WORKSTATION.ID"
+        NUMBER INSTRUMENT_AA_ID FK "= V_S_INST_INSTRUMENT.AA_ID"
     }
     V_S_LAB_WORKSTATION {
         VARCHAR ID PK
@@ -782,7 +833,11 @@ erDiagram
 ```
 
 **Operational notes**
-- **Two workstation FKs from a single instrument row** — `ORD_WORKSTATION_ID` (where orders route for the analyzer) and `RES_WORKSTATION_ID` (where results post). They often match for direct analyzers; they diverge for middleware-routed instruments. Diagram collapses both into one edge for renderer simplicity; both columns are listed in the entity body.
+- **`V_S_INST_WORKSTATIONS` is the M:M bridge between instruments and workstations** (verified 2026-05-01 — 119 rows / 47 distinct workstations / 64 distinct instruments). Both `INSTRUMENT_ID` (code) and `INSTRUMENT_AA_ID` (numeric) are exposed; pick whichever fits the join. Canonical pattern: `JOIN V_S_INST_WORKSTATIONS iws ON iws.WORKSTATION = ws.ID`. Presence of an iws row = the workstation is interfaced.
+- **Many-to-many in both directions:**
+  - One workstation → multiple instruments (avg 2.53; max **8 at TCHA** — TUH Chemistry where multiple analyzers route under one workstation banner). Other dense workstations: ORBG (5), JCHA (5).
+  - One instrument → multiple workstations (avg 1.86) — middleware pattern. TREM (Remisol) maps to TCHA/THEMA/THEMM/TCHM (4 workstations, all sharing INSTRUMENT_AA_ID=3260). Same pattern for JREM, EREM, FREM, WFREM.
+- **`V_S_INST_INSTRUMENT.ORD_WORKSTATION_ID`/`RES_WORKSTATION_ID` are denormalized primary-workstation pointers** on the instrument row itself; `V_S_INST_WORKSTATIONS` is the authoritative full M:M. They often match for direct analyzers; they diverge for middleware-routed instruments. Use the bridge for "all workstations served by this instrument."
 - **`ACTIVE = 'A'` (not `'Y'`)** for auto-services and server processes (auto-reporting, RBS, label servers, monitoring). Standard active analyzers use `'Y'`. `'N'` = retired / inactive.
 - **`INSTRUMENT_TYPE = 'HIS'` rows are NOT analyzers** — they're system-infrastructure interfaces (ADT, order entry, billing, ESB, auto-reporting, label servers). Filter these out for analyzer-only queries: `WHERE INSTRUMENT_TYPE IN ('CHEMISTRY','HEMATOLOGY','MICROBIOLOGY')`.
 - **Middleware shared-connection pattern**: many physical analyzers route through one logical interface row. Beckman AU / DxC / Access at TUH all flow through `TREM` (Remisol). Same pattern at JNS (`JREM`), Episcopal (`EREM`), Fox Chase (`FREM`), W&F (`WFREM`). Use `PORT_NAME` and `INST_DEP_1` / `INST_DEP_2` to spot middleware dependencies.

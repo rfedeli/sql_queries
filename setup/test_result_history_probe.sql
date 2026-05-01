@@ -1401,33 +1401,43 @@ WHERE ROWNUM <= 5;
 /* ----------------------------------------------------------------------------
    47. Role coverage for recent amenders
        For every MOD_TECH on V_P_LAB_TEST_RESULT_HISTORY in the last 90
-       days, list the assigned roles. Joins through the chain:
-         MOD_TECH → V_S_SEC_USER.TECH_ID → V_S_SEC_USER.AA_ID
-                                       → V_S_SEC_USERROLES.<user_fk>
-                                       → role master.ROLE_NAME
+       days, list the assigned roles. Verified join chain (per
+       dictionary_pdf_probes_tier2a.sql §3 + CLAUDE.md V_S_SEC_USER profile,
+       2026-05-01):
 
-       This query is a STUB — fill in the FK column names from §45a/§46
-       output before running. Pattern preserved so it's easy to wire up.
+         MOD_TECH → V_S_SEC_USER.TECH_ID  (ROLE='U' filter)
+                                          → V_S_SEC_USER.ID (NOT AA_ID —
+                                            M:M FKs are to ID, the negative-
+                                            NUMBER column)
+                                          → V_S_SEC_USERROLES.USER_ID
+                  V_S_SEC_USERROLES.ROLE_ID → V_S_SEC_USER.ID (ROLE='R' rows)
+                                            → role.LASTNAME (role display name)
+
+       Note: V_S_SEC_USERROLES is also site-scoped via SITE_ID NOT NULL,
+       but for "what roles does this amender have anywhere" we don't filter
+       on site.
    --------------------------------------------------------------------------- */
--- WITH recent_mod_tech AS (
---     SELECT MOD_TECH, COUNT(*) AS amendment_rows
---     FROM V_P_LAB_TEST_RESULT_HISTORY
---     WHERE MOD_DT >= SYSDATE - 90
---     GROUP BY MOD_TECH
--- )
--- SELECT
---     rmt.MOD_TECH,
---     rmt.amendment_rows,
---     usr.LASTNAME,
---     usr.FIRSTNAME,
---     LISTAGG(role_name, '; ') WITHIN GROUP (ORDER BY role_name)
---                                                 AS roles
--- FROM recent_mod_tech                rmt
--- LEFT JOIN V_S_SEC_USER             usr ON usr.TECH_ID = rmt.MOD_TECH
--- LEFT JOIN V_S_SEC_USERROLES        ur  ON ur.<user_fk>  = usr.AA_ID
--- LEFT JOIN <role_master_view>        rm  ON rm.<role_pk> = ur.<role_fk>
--- GROUP BY rmt.MOD_TECH, rmt.amendment_rows, usr.LASTNAME, usr.FIRSTNAME
--- ORDER BY rmt.amendment_rows DESC;
+WITH recent_mod_tech AS (
+    SELECT MOD_TECH, COUNT(*) AS amendment_rows
+    FROM V_P_LAB_TEST_RESULT_HISTORY
+    WHERE MOD_DT >= SYSDATE - 90
+    GROUP BY MOD_TECH
+)
+SELECT
+    rmt.MOD_TECH,
+    rmt.amendment_rows,
+    usr.LASTNAME,
+    usr.FIRSTNAME,
+    LISTAGG(role.LASTNAME, '; ') WITHIN GROUP (ORDER BY role.LASTNAME)
+                                                AS roles
+FROM       recent_mod_tech    rmt
+LEFT JOIN  V_S_SEC_USER       usr  ON usr.TECH_ID = rmt.MOD_TECH
+                                  AND usr.ROLE    = 'U'
+LEFT JOIN  V_S_SEC_USERROLES  ur   ON ur.USER_ID  = usr.ID
+LEFT JOIN  V_S_SEC_USER       role ON role.ID     = ur.ROLE_ID
+                                  AND role.ROLE   = 'R'
+GROUP BY rmt.MOD_TECH, rmt.amendment_rows, usr.LASTNAME, usr.FIRSTNAME
+ORDER BY rmt.amendment_rows DESC;
 
 
 /* ----------------------------------------------------------------------------
@@ -1499,19 +1509,30 @@ FROM ALL_TAB_COLUMNS
 WHERE TABLE_NAME = 'V_S_SEC_CONTACT_INFO'
 ORDER BY COLUMN_ID;
 
--- 50b. Find the FK back to V_S_SEC_USER (likely USER_AA_ID, USER_ID, or
---      similar — confirm with 50a output).
+-- 50b. FK shape (per dictionary_pdf_probes_tier2a.sql §3.2): V_S_SEC_CONTACT_INFO
+--      has 24 columns including ID (NUMBER NOT NULL), TYPE (VARCHAR2(9) NOT NULL,
+--      polymorphic discriminator likely USER/PHYSICIAN/SUPPLIER/REFLAB/etc.), and
+--      CONTACT_ID (VARCHAR2(5) NOT NULL). The ID column is the FK target back to
+--      whatever entity TYPE points at. Without TYPE-cardinality probe, can't
+--      definitively name the user-record value (likely 'USER').
 -- 50c. Compare CONTACT_INFO populated rate to V_S_SEC_USER row count.
+--      Per §3.6 (2026-05-01): V_S_SEC_USER has 3,547 rows; V_S_SEC_CONTACT_INFO
+--      has only 9 rows. CONTACT_INFO is NOT a per-user contact table — too
+--      small. The 9 rows likely cover ref-lab MED_DIRECTOR records or similar.
 SELECT
     (SELECT COUNT(*) FROM V_S_SEC_USER)         AS user_rows,
     (SELECT COUNT(*) FROM V_S_SEC_CONTACT_INFO) AS contact_rows;
 
--- 50d. CONTACT_INFO row for our ground-truth tech (TKAZ).
---      Stub — fill in the actual user-FK column from 50a:
+-- 50d. STILL REQUIRES TYPE-CARDINALITY PROBE before this can be wired.
+--      Run this first to enumerate the TYPE values:
+--          SELECT TYPE, COUNT(*) FROM V_S_SEC_CONTACT_INFO GROUP BY TYPE;
+--      Then once we know whether 'USER' (or 'U' or other code) flags
+--      user-record rows, the join becomes:
 -- SELECT *
 -- FROM V_S_SEC_CONTACT_INFO ci
--- JOIN V_S_SEC_USER         u  ON u.AA_ID = ci.<user_fk>
--- WHERE u.TECH_ID = 'TKAZ';
+-- JOIN V_S_SEC_USER         u  ON u.AA_ID = ci.ID  -- assumes ID is the FK
+-- WHERE ci.TYPE   = '<USER-discriminator-from-cardinality-probe>'
+--   AND u.TECH_ID = 'TKAZ';
 
 
 /* ----------------------------------------------------------------------------
@@ -1533,30 +1554,53 @@ SELECT
                               amendments that should get extra
                               auditor scrutiny
 
-       This template is left as commented SQL until §43-§50 confirm
-       the column names. After confirmation, paste the column-aware
-       version into corrected_results_summary.sql or its audit sibling.
+       Column names confirmed via dictionary_pdf_probes_tier2a.sql §3 (run
+       2026-05-01). Template kept as commented SQL because it has unresolved
+       upstream dependencies (the `hist_full` CTE belongs in
+       corrected_results_summary.sql, not here). To use: paste this CTE
+       skeleton on top of an existing hist_full and adjust the final SELECT.
+
+       Operational caveats discovered during probing:
+       - V_S_SEC_USER_GROUP and V_S_SEC_GROUP_ASSIGNMENT are BOTH EMPTY
+         in this deployment (0 rows each, verified §3.6). The amender_group
+         CTE will return zero rows; group-membership is not operationalized.
+         Forward-compatible — when groups get populated, this CTE works as-is.
+       - GROUP_ASSIGNMENT.MEMBER_TYPE='U' filter is an UNVERIFIED assumption
+         (the polymorphic enum hasn't been probed). Confirm before relying.
+       - EMERGENCY_ACCESS is documented as 0% populated (vestigial) — the
+         IS_PRIVILEGED case-arm for it effectively never fires.
+       - FUTURE_DEACTIVATE_DATE is NUMBER(10,0) with sentinel values (-1/0),
+         max real values from 2019-2020 (unmaintained). Don't compare to
+         SYSDATE directly — the column type is numeric, not DATE, and the
+         data is stale. Either drop the FUTURE_DEACTIVATE arm or adapt to
+         the sentinel semantics.
    --------------------------------------------------------------------------- */
 -- WITH ... (existing hist_full CTE from corrected_results_summary.sql) ...
 -- ,
 -- amender_role AS (
 --     SELECT
 --         u.TECH_ID,
---         LISTAGG(rm.<role_name>, '; ')
---             WITHIN GROUP (ORDER BY rm.<role_name>)            AS roles
---     FROM V_S_SEC_USER          u
---     JOIN V_S_SEC_USERROLES     ur ON ur.<user_fk>  = u.AA_ID
---     JOIN <role_master_view>     rm ON rm.<role_pk> = ur.<role_fk>
+--         LISTAGG(role.LASTNAME, '; ')
+--             WITHIN GROUP (ORDER BY role.LASTNAME)             AS roles
+--     FROM       V_S_SEC_USER       u
+--     JOIN       V_S_SEC_USERROLES  ur   ON ur.USER_ID = u.ID
+--                                       AND u.ROLE    = 'U'
+--     JOIN       V_S_SEC_USER       role ON role.ID   = ur.ROLE_ID
+--                                       AND role.ROLE = 'R'
 --     GROUP BY u.TECH_ID
 -- ),
 -- amender_group AS (
+--     -- Currently returns zero rows (V_S_SEC_USER_GROUP and
+--     -- V_S_SEC_GROUP_ASSIGNMENT are both empty in this deployment).
 --     SELECT
 --         u.TECH_ID,
---         LISTAGG(g.<group_name>, '; ')
---             WITHIN GROUP (ORDER BY g.<group_name>)            AS groups
---     FROM V_S_SEC_USER             u
---     JOIN V_S_SEC_USER_GROUP       ug ON ug.<user_fk>  = u.AA_ID
---     JOIN V_S_SEC_GROUP_ASSIGNMENT g  ON g.<group_pk>  = ug.<group_fk>
+--         LISTAGG(g.NAME, '; ')
+--             WITHIN GROUP (ORDER BY g.NAME)                    AS groups
+--     FROM       V_S_SEC_USER             u
+--     JOIN       V_S_SEC_GROUP_ASSIGNMENT ga ON ga.MEMBER_ID = u.ID
+--                                           AND ga.MEMBER_TYPE = 'U'  -- UNVERIFIED
+--     JOIN       V_S_SEC_USER_GROUP       g  ON g.ID = ga.ID
+--     WHERE u.ROLE = 'U'
 --     GROUP BY u.TECH_ID
 -- )
 -- SELECT
@@ -1565,8 +1609,8 @@ SELECT
 --     ag.groups                                          AS CHANGED_BY_GROUPS,
 --     CASE
 --         WHEN usr.SCC_USER = 'Y'                       THEN 'Y'
---         WHEN usr.EMERGENCY_ACCESS = 'Y'               THEN 'Y'
---         WHEN usr.FUTURE_DEACTIVATE_DATE < SYSDATE     THEN 'Y'
+--         -- EMERGENCY_ACCESS / FUTURE_DEACTIVATE_DATE arms removed —
+--         -- vestigial / unmaintained per §3 probe findings (2026-05-01).
 --         ELSE 'N'
 --     END                                                AS IS_PRIVILEGED
 -- FROM ...

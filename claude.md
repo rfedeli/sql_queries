@@ -122,7 +122,7 @@ Collection location codes (used in `V_P_LAB_SPECIMEN.COLLECTION_LOCATION`) follo
 
 ## Cross-Cutting Query Rules
 
-These rules apply to every query — also documented in `field_reference.md`. Read both files before writing a new query.
+These rules apply to every query.
 
 ### Valid MRN Filter (mandatory on every query touching patient identity)
 
@@ -845,7 +845,7 @@ LEFT JOIN V_S_SEC_USER usr ON usr.TECH_ID = hf.MOD_TECH
                            AND usr.ROLE   = 'U'
 ```
 
-For role enrichment, V_S_SEC_USERROLES is the live grant table (9,010 rows / 3,546 users; `V_S_SEC_USERSITEROLE` has only 20 rows and is essentially unused). The M:M FKs are to `V_S_SEC_USER.ID` (the negative-NUMBER column), NOT `AA_ID`:
+For role enrichment, V_S_SEC_USERROLES is the live grant table (9,012 rows / 3,547 users as of 2026-05-01; `V_S_SEC_USERSITEROLE` has only 20 rows and is essentially unused). The M:M FKs are to `V_S_SEC_USER.ID` (the negative-NUMBER column), NOT `AA_ID`:
 
 ```sql
 JOIN V_S_SEC_USERROLES ur ON ur.USER_ID = u.ID  AND u.ROLE   = 'U'
@@ -862,6 +862,27 @@ A typical user has ~2.5 grants (clinical-job + worklist + printer scopes mixed).
 - `EMERGENCY_ACCESS`, `EMERGENCY_ROLE` are 0% populated — vestigial.
 - `FUTURE_ACTIVATE_DATE`, `FUTURE_DEACTIVATE_DATE`, `LAST_PWD_DATE` are NUMBER(10,0) with sentinel values (-1 / 0); max real values are from 2019-2020 (early SCC days), unmaintained since. Don't compare to SYSDATE; treat as effectively vestigial.
 - ID polarity is decorative: 99.8% of all rows have negative `ID` regardless of ROLE — not a useful discriminator.
+
+#### Security module — full composition (verified 2026-05-01)
+
+The schema supports a layered security model — direct user-role grants, LDAP-bridged grants, internal SCC groups — but **only the direct-grant path is actually populated in this deployment.** Most of the schema is operational potential, not lived practice.
+
+| View | Rows | Shape | Status |
+|------|------|-------|--------|
+| `V_S_SEC_USER` | 3,547 | Users (`ROLE='U'`, 97.7%) + role definitions inline (`ROLE='R'`, 2.3%) | Workhorse |
+| `V_S_SEC_USERROLES` | 9,012 | 4 cols: AA_ID, ROLE_ID, USER_ID, SITE_ID (all NOT NULL). 3-way junction — every grant is site-scoped on this view itself | **Workhorse — entire authorization model in practice** |
+| `V_S_SEC_USERSITEROLE` | 20 | Site-role overlay | Vestigial — schema slot |
+| `V_S_SEC_CONTACT_INFO` | 9 | 24 cols. Polymorphic via `TYPE VARCHAR2(9)` (USER/PHYSICIAN/SUPPLIER/REFLAB/etc.); fields include MED_DIRECTOR, dual phone/fax/email, 1024-char NOTES | Tiny — likely a few ref-lab/supplier contacts only |
+| `V_S_SEC_GROUP_ROLES_MAPPING` | 1 | 3 cols: AA_ID, LDAP_GROUP (VARCHAR2 255 — wide enough for full DN), ROLE | LDAP↔SCC role bridge — set up but unused |
+| `V_S_SEC_USER_GROUP` | 0 | 5 cols: ID, NAME, DESCRIPTION, MAIL — group **definitions** (NOT a junction). MAIL column suggests groups were intended for distribution lists, not role authorization | Empty — never populated |
+| `V_S_SEC_GROUP_ASSIGNMENT` | 0 | 4 cols: AA_ID, ID, MEMBER_ID, MEMBER_TYPE (CHAR 1) — polymorphic group-membership junction | Empty — never populated |
+
+**Operational implications:**
+- For "who is authorized for what role," `V_S_SEC_USERROLES` is the only place to look — the LDAP and internal-group paths are theoretical here.
+- Despite SITE_ID being NOT NULL on `V_S_SEC_USERROLES`, it changes the model from CLAUDE.md's earlier description: user-role grants are inherently site-scoped on this view. `V_S_SEC_USERSITEROLE` (20 rows) is a redundant overlay that never got adopted.
+- `V_S_SEC_CONTACT_INFO` is NOT a per-user contact-info table — too small (9 rows). Polymorphic structure + MED_DIRECTOR field suggests it holds a handful of ref-lab/supplier contact records, not user demographics. User name/role lives on `V_S_SEC_USER` directly.
+- The `MEMBER_TYPE CHAR(1)` polymorphism on `V_S_SEC_GROUP_ASSIGNMENT` would have allowed groups to contain users + nested groups, but the table is empty — concept never operationalized.
+- Average grants per user: 9012/3547 ≈ **2.54** — confirms CLAUDE.md's prior "~2.5 grants per user" claim. This is the right ballpark for "clinical-job + worklist + printer scopes mixed."
 
 #### Corrected-result print-notice behavior (chemistry / general reports)
 
@@ -1335,34 +1356,242 @@ Implications:
 
 ### V_S_LAB_CLINIC — Clinic / ordering location setup
 
+**129 columns total — 123 live, 6 vestigial (DATA_LENGTH=0).** Volume: 1,397 clinics — the complete ward / outreach office / ED / urgent-care master. Verified 2026-05-01. Notably less dead schema than peers (~5%) — most of the 80+ PDF-claimed columns are operationally live.
+
+#### Identity & Routing
+
 | Column | Type | Description |
 |--------|------|-------------|
-| AA_ID | NUMBER 14 | PK |
-| ID | VARCHAR2 15 | Clinic code |
+| AA_ID | NUMBER 22 | PK (NOT NULL) |
+| ID | VARCHAR2 15 | Clinic code (NOT NULL) |
 | NAME | VARCHAR2 100 | Clinic name |
+| NAME_UPPER | VARCHAR2 400 | Uppercase computed search column |
+| CLNAME_UPPER | VARCHAR2 400 | **Duplicate of NAME_UPPER** (legacy CL-prefix naming, same VARCHAR2 400 width). Pick NAME_UPPER |
+| SECONDARY_ID | VARCHAR2 15 | Secondary identifier |
 | ORD_LOCATION_ID | VARCHAR2 15 | Ordering location / collection center ID — the authoritative facility grouping in practice |
-| FACILITY | VARCHAR2 20 | Hospital code — NOTE: often blank/null in this system; use ORD_LOCATION_ID instead |
+| FACILITY | VARCHAR2 20 | Hospital code — often blank/null; use ORD_LOCATION_ID instead |
+| FACILITY_NAME | VARCHAR2 43 | Facility display name (separate from FACILITY code) |
 | ACTIVE | VARCHAR2 1 | Active flag (Y/N) |
+| TYPE | VARCHAR2 30 | Clinic type |
+| SERVICE_TYPE | VARCHAR2 30 | Service type |
 | BILLING | VARCHAR2 23 | Billing number |
 | LICENSE | VARCHAR2 11 | License number |
-| SERVICE_TYPE | VARCHAR2 30 | Type of service |
-| DOCTOR_ID | VARCHAR2 15 | House physician |
-| STREET1–2, CITY, STATE, ZIP, PHONE1, FAX, EMAIL | various | Contact info |
+| DOCTOR_ID | VARCHAR2 15 | House physician (FK by code → V_S_LAB_DOCTOR.ID) |
+| GROUP_HOSP_NUMBER | VARCHAR2 7 | Group hospital number |
+| MRN_BILL_PREFIX | VARCHAR2 5 | MRN-bill prefix |
+| CLIENT_ID | VARCHAR2 16 | Client identifier |
+| OUTREACH | NUMBER 22 | Outreach indicator |
+| EXTRAMURAL | NUMBER 22 | Extramural indicator |
+
+#### Address & Contact
+
+| Column | Type | Description |
+|--------|------|-------------|
+| STREET1 / STREET2 | VARCHAR2 64 | Address |
+| CITY / STATE / ZIP / COUNTRY / COUNTY | VARCHAR2 | Address components |
+| PHONE1 / PHONE2 | VARCHAR2 40 | Phone |
+| PHONE1_EXT / PHONE2_EXT | VARCHAR2 11 | Phone extensions (modern naming) |
+| CLTEL1EXT / CLTEL2EXT | VARCHAR2 11 | **Duplicates of PHONE1_EXT/PHONE2_EXT** (legacy CLTEL naming) |
+| FAX | VARCHAR2 40 | Fax |
+| FAX_EXT | VARCHAR2 11 | Fax extension |
+| PAGER | VARCHAR2 20 | Pager |
+| PAGER_EXT | VARCHAR2 11 | Pager extension |
+| EMAIL | VARCHAR2 100 | Email |
+| MODEM | VARCHAR2 20 | Modem |
+| MODEM_EXT | VARCHAR2 11 | Modem extension |
+| CONTACT | VARCHAR2 47 | Contact name |
+| CONTACT_EXT | VARCHAR2 47 | Extended contact info |
+| ADDRESS_TYPE | VARCHAR2 3 | Address type code |
+| PRIMARY_PHONE_COMMENT / PRIMARY_PHONE_EQUIPMENT_TYPE | VARCHAR2 80 / 3 | Primary phone metadata |
+| ALT_PHONE_COMMENT / ALT_PHONE_EQUIPMENT_TYPE | VARCHAR2 80 / 3 | Alt phone metadata |
+| FAX_COMMENT / PAGER_COMMENT / EMAIL_COMMENT / MODEM_COMMENT | VARCHAR2 80 each | Per-channel comments |
+
+#### HL7/FHIR Assigning Authority
+
+| Column | Type | Description |
+|--------|------|-------------|
+| FACILITYS_ASSIGNING_AUTHORITY | VARCHAR2 20 | Facility's assigning authority |
+| AUTHORITY_FOR_GENERATED_MRN | VARCHAR2 20 | Authority for system-generated MRN |
+| FACILITY_FOR_GENERATED_MRN | VARCHAR2 20 | Facility for system-generated MRN |
+
+#### Workflow Behavior
+
+| Column | Type | Description |
+|--------|------|-------------|
+| ORDERING_PRIORITY | CHAR 1 | Default ordering priority |
+| DISCHARGED_DAYS | NUMBER 22 (10) | Days threshold for discharged-status handling |
+| **USER_INSTRUCTIOS** | VARCHAR2 200 | **Schema-preserved typo of USER_INSTRUCTIONS** — must be queried with the misspelling |
+| CALL_INSTRUCTIONS | VARCHAR2 200 | Call instructions |
+| CANNED_MESSAGE | VARCHAR2 15 | Canned message ID |
+| ORDER_KEYPAD | VARCHAR2 30 | Order keypad code |
+| AUTO_REP_OPTION_DESC | VARCHAR2 4000 | **Computed via `CSF_SSM_PKG.Lookup`** — PDF warns this is a low-performance column; avoid in WHERE clauses |
+| AUTO_REP_OPTION | NUMBER 22 (5) | Auto-report option code |
+| REP_FORMAT / REP_LAYOUT | VARCHAR2 5 | Report format / layout |
+| MIC_FORMAT / MIC_LAYOUT | VARCHAR2 7 | Micro report format / layout |
+| AUTO_PRINTER / BATCH_PRINTER / ESO_PRINTER | VARCHAR2 5 | Printer assignments |
+| COURIER_ROUTE | VARCHAR2 5 | Courier route |
+| REPORT_COPIES | NUMBER 22 (5) | Number of report copies |
+| STARTING_DATE / STARTING_DT | NUMBER / DATE | Activation date (numeric pair + canonical DATE) |
+| CLIENT_BILL_TYPE | VARCHAR2 4000 | Client billing type (denormalized — wide column) |
+| SB_BILLTYPE | NUMBER 22 (1) | SB billing type |
+| DONOTMERGE | CHAR 1 (NOT NULL) | Do-not-merge flag |
+| REPRINT_FINAL | CHAR 1 (NOT NULL) | Reprint-final flag |
+| PRICE_REDIRECTION_TO | VARCHAR2 5 | Price redirection target |
+| COLLECTOR / COLLECTOR_ID | CHAR 1 | Collector flags |
+| CARRIER_TYPE_1–4 | VARCHAR2 5 | Up to 4 carrier-type slots |
+| PROVIDER_NUMBER_1–4 | VARCHAR2 11 | Up to 4 provider-number slots |
+| ADDITIONAL_INFO_1–4 | VARCHAR2 19 | Up to 4 additional-info slots |
+| CARIER_CODE | VARCHAR2 5 | Carrier code (note: typo in column name — single 'r' in 'CARIER') |
+| CLINIC_PROFILE / CLINIC_PROFILE_EX | VARCHAR2 47 | Clinic profile (free-text) |
+| PROFILE_LINE_1 / PROFILE_LINE_2 | VARCHAR2 47 | Profile lines |
+| LANGUAGE / DUPPT_PATTYPES / RANK / BASE | various | Misc ROE/HIS metadata |
+
+#### Workflow Flags — duplicate FL_ / FLAG_ pairs
+
+The view carries TWO families of workflow flags — modern `FL_*` (cols 39–55) and legacy `FLAG_*` (cols 84–95). Many concepts have both forms. Pick the modern `FL_*` form.
+
+| Modern (FL_*) | Legacy (FLAG_*) | Concept |
+|---------------|-----------------|---------|
+| FL_AUTOREP | FLAG_AUTOPRINT_REPORT | Auto-report |
+| FL_AUTOREP_MIC | FLAG_AUTOPRINT_MIC_REPORT | Auto-report micro |
+| FL_GENERATE_MRN | FLAG_GENERATE_MRN | Generate MRN |
+| FL_CHART_AVAIL | FLAG_CHART_AVAILABLE | Chart available |
+| FL_SKIP_AR_POST (vestigial) | FLAG_SKIP_POSTING_AR | Skip AR posting |
+| FL_SINGLE_REP_FIN | FLAG_PRINT_SINGLE_REPORT_FINAL | Single final report |
+| PRE_OPS | FLAG_PRE_OP_CLINIC | Pre-op clinic |
+
+Other live flags (no legacy duplicate): `FL_LABEL_AT_OE`, `FL_SKIP_BILL`, `FL_SKIP_DRAWING_BILL`, `FL_DX_REQ_AT_OE`, `FL_SEND_TO_STAT`, `FL_SEND_TO_STAT_REV`, `FL_RV_FORM_LABEL`, `FL_ROE_ALLOW_MERG`, `FL_ROE_SELECT_MERG`, `FL_ROE_PREV_MERG`, `FL_ROE_SEND_NOTICE`, `FLAG_PRINT_CUM_SINGLE_REPORT`, `FLAG_PRINT_SINGLE_COMPL_CHAPTS`. Note that the ROE merge family (FL_ROE_*) is **live** here but **vestigial** on V_S_LAB_DOCTOR — same conceptual columns, opposite live/dead status across the two views.
+
+#### Vestigial / Schema Slots (DATA_LENGTH=0 — 6 columns)
+
+`PRICE`, `BALANCE`, `TOTAL_PAYMENT`, `FL_SKIP_AR_POST`, `FL_SKIP_CALL`, `FL_PRIVATE_LOCATION`. Do not query.
+
+**Notes:**
+
+- **Volume**: 1,397 clinics — the smallest of the three big setup masters (vs. 17,714 tests / 207,182 doctors).
+- **Pick `ORD_LOCATION_ID` over `FACILITY`** for facility grouping — FACILITY is often blank.
+- **`USER_INSTRUCTIOS` is a schema-preserved typo** — must be queried with the misspelling.
+- **`AUTO_REP_OPTION_DESC` is a computed VARCHAR2 4000** via `CSF_SSM_PKG.Lookup` — slow; don't use in WHERE clauses, only SELECT for display.
+- **Many duplicate-column pairs** to be aware of: `NAME_UPPER`/`CLNAME_UPPER`, `PHONE*_EXT`/`CLTEL*EXT`, modern `FL_*` vs legacy `FLAG_*` flags.
 
 ### V_S_LAB_DOCTOR — Doctor setup
 
+**112 columns total — 93 live, 19 vestigial (DATA_LENGTH=0).** Volume: **207,182 rows** — massive roster, accumulates external referring physicians from Epic, outreach, and reference-lab flows; **filter on `ACTIVE='Y'` for typical lookups**. Verified 2026-05-01.
+
+#### Identity & Naming
+
 | Column | Type | Description |
 |--------|------|-------------|
-| AA_ID | NUMBER 14 | PK |
-| ID | VARCHAR2 15 | Doctor ID |
+| AA_ID | NUMBER 22 | PK (NOT NULL) |
+| ID | VARCHAR2 15 | Doctor ID (NOT NULL) |
+| ACTIVE | VARCHAR2 1 | Active flag (Y/N) — **filter on this; 207K total but many inactive/historical** |
+| TYPE | VARCHAR2 3 | Type: G=DoctorGroup, I=Institution, N=Non staff, S=Staff, T=Temporary |
+| SECONDARY_ID / THIRD_ID | VARCHAR2 15 | Additional identifiers |
+| TITLE | VARCHAR2 50 | Title (PDF calls this NAME_PREFIX in newer docs; schema uses TITLE) |
 | LAST_NAME | VARCHAR2 50 | Last name |
 | FIRST_NAME | VARCHAR2 80 | First name |
 | MIDDLE_NAME | VARCHAR2 50 | Middle name |
-| TITLE | VARCHAR2 50 | Title |
-| CLINIC_ID | VARCHAR2 15 | Main clinic code |
-| ACTIVE | VARCHAR2 1 | Active flag (Y/N) |
-| TYPE | VARCHAR2 3 | Type: G=DoctorGroup, I=Institution, N=Non staff, S=Staff, T=Temporary |
-| SECONDARY_ID | VARCHAR2 15 | Secondary ID |
+| SUFFIX | VARCHAR2 11 | Name suffix (PDF: NAME_SUFFIX) |
+| PROFESSIONAL_SUFFIX | VARCHAR2 80 | Professional suffix (PDF: NAME_PRO_SUFFIX) |
+| CLINIC_ID | VARCHAR2 15 | Main clinic code (FK by code → V_S_LAB_CLINIC.ID) |
+| MEDICAL_SERVICE | VARCHAR2 5 | Medical service |
+| SPECIALITY | VARCHAR2 30 | Specialty (note: column name single-L spelling) |
+| CONTACT | VARCHAR2 50 | Contact name |
+| ROLE | VARCHAR2 30 | Role |
+| RANK | VARCHAR2 7 | Rank |
+| GROUP_HOSP_CODE | VARCHAR2 7 | Group hospital code |
+| BASE | VARCHAR2 7 | Base code |
+| LANGUAGE | VARCHAR2 5 | Language |
+| CONSULTANT | CHAR 1 | Consultant flag |
+| STATUS | CHAR 1 | Status flag |
+
+#### Cross-System Identifiers (with UPPER doppelgangers for case-insensitive search)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| NPI | VARCHAR2 10 | National Provider Identifier |
+| NPI_UPPER | VARCHAR2 40 | Uppercase computed search column for NPI |
+| UPIN | VARCHAR2 16 | Unique Physician Identification Number |
+| UPIN_UPPER | VARCHAR2 64 | Uppercase computed search column for UPIN |
+| LICENSE | VARCHAR2 21 | License number |
+| BILLING | VARCHAR2 23 | Billing identifier |
+| BILLING_AREA | VARCHAR2 20 | Billing area |
+| TERITORY | VARCHAR2 20 | Territory (note: column name single-R spelling) |
+| SERVICE_TYPE | VARCHAR2 15 | Service type |
+| SSN | VARCHAR2 15 | **PHI-sensitive** Social Security Number |
+| SOCIAL_SEC_NUMBER | VARCHAR2 15 | **Duplicate of SSN** (legacy long-form name); both columns coexist |
+| SIGNATURE | VARCHAR2 149 | Doctor signature |
+
+#### HL7/FHIR Assigning Authority (cross-system identifier metadata)
+
+Each identifier slot has a paired authority + facility. PDF documented these as HL7/FHIR integration fields; all 8 are live:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AUTHORITY_FOR_PRIMARY_ID / FACILITY_FOR_PRIMARY_ID | VARCHAR2 20 | For ID (primary) |
+| AUTHORITY_FOR_SECONDARY_ID / FACILITY_FOR_SECONDARY_ID | VARCHAR2 20 | For SECONDARY_ID |
+| AUTHORITY_FOR_THIRD_ID / FACILITY_FOR_THIRD_ID | VARCHAR2 20 | For THIRD_ID |
+| AUTHORITY_FOR_NPI / FACILITY_FOR_NPI | VARCHAR2 20 | For NPI |
+
+#### Address & Contact
+
+| Column | Type | Description |
+|--------|------|-------------|
+| STREET1 / STREET2 | VARCHAR2 64 | Address |
+| CITY / STATE / ZIP / COUNTRY / COUNTY | VARCHAR2 | Address components |
+| PHONE1 / PHONE2 | VARCHAR2 40 | Phone |
+| PHONE1EXT / PHONE2EXT | VARCHAR2 11 | Phone extensions |
+| FAX / FAX_EXT | VARCHAR2 40 / 11 | Fax + extension |
+| PAGER / PAGER_EXT | VARCHAR2 40 / 11 | Pager + extension |
+| EMAIL | VARCHAR2 100 | Email |
+| MODEM / MODEM_EXT | VARCHAR2 40 / 11 | Modem + extension |
+| ADDRESS_TYPE | VARCHAR2 3 | Address type code |
+| PRIMARY_PHONE_COMMENT / PRIMARY_PHONE_EQUIPMENT_TYPE | VARCHAR2 80 / 3 | Primary phone metadata |
+| ALT_PHONE_COMMENT / ALT_PHONE_EQUIPMENT_TYPE | VARCHAR2 80 / 3 | Alt phone metadata |
+| FAX_COMMENT / PAGER_COMMENT / EMAIL_COMMENT / MODEM_COMMENT | VARCHAR2 80 each | Per-channel comments |
+
+#### `DC*` Prefix Family (probably "discharged" or "doctor's-clinic" duplicate slots)
+
+A separate set of contact / report-format columns prefixed with `DC*`:
+`DCPAGER`, `DCFAX`, `DCEMAIL`, `DCREPFORMAT`, `DCREPLAYOUT`, `DCMICFORMAT`, `DC_COUNTY`. Purpose unclear; possibly per-context overrides for discharged-patient routing or duplicate office addresses. Not yet probed for population. Treat as opaque until needed.
+
+#### Reporting & Workflow
+
+| Column | Type | Description |
+|--------|------|-------------|
+| REP_FORMAT / DCREPFORMAT / DCREPLAYOUT | VARCHAR2 5 | Report format / layout |
+| AUTO_PRINTER / BATCH_PRINTER | VARCHAR2 5 | Printer assignments |
+| DCMICFORMAT / MIC_LAYOUT | VARCHAR2 7 | Micro report format / layout |
+| REPORT_COPIES | NUMBER 22 (5) | Report copies |
+| COURIER_ROUTE | VARCHAR2 5 | Courier route |
+| ORDER_KEYPAD | VARCHAR2 30 | Order keypad code |
+| CANNED_MESSAGE | VARCHAR2 15 | Canned message ID |
+| CALL_INSTRUCTIONS | VARCHAR2 200 | Call instructions |
+| ROE_SEND_NOTICE | VARCHAR2 1 | ROE send-notice flag |
+| FL_ROE_SEND_NOTICE | VARCHAR2 1 | **Duplicate of ROE_SEND_NOTICE** (modern FL_ form alongside legacy bare form) |
+| PROFILE_LINE_1 / PROFILE_LINE_2 | VARCHAR2 71 | Profile text lines |
+| DOCTOR_SCHEDULE | VARCHAR2 47 | Doctor schedule |
+| SPECIMEN_PICKUP_SCHEDULE | VARCHAR2 47 | Pickup schedule |
+| DUPPT_PATTYPES | VARCHAR2 7 | Duplicate-patient patient-types config |
+
+#### Vestigial / Schema Slots (DATA_LENGTH=0 — 19 columns)
+
+- `INS_ID_1`–`INS_ID_4` (4 cols)
+- `BILLING_AREA_1`–`BILLING_AREA_4` (4 cols)
+- `ADDITIONAL_INFO_1`–`ADDITIONAL_INFO_4` (4 cols)
+- **`ROE_ALLOW_ORDER_MARGING`, `ROE_SELECTIVE_ORDER_MARGING`, `ROE_PREVENT_ORDER_MARGING`** — schema-preserved typo of "MERGING" (3 cols, all dead). Plus parallel `FL_ROE_ALLOW_MERG`, `FL_ROE_SELECT_MERG`, `FL_ROE_PREV_MERG` (3 cols) — also dead. Entire **ROE merge-control concept is vestigial here** (note: it's **live** on V_S_LAB_CLINIC).
+- `LICENSE_OPTKEY` (1 col)
+
+**Notes:**
+
+- **Volume context**: 207,182 rows — by far the largest of the three setup masters (vs. 17,714 tests / 1,397 clinics). Includes external referring physicians from Epic / outreach / reference-lab flows.
+- **Always filter on `ACTIVE='Y'`** for typical lookups. Inactive rows accumulate over time.
+- **PDF named "NAME_*" fields don't exist with those names** — schema uses TITLE / SUFFIX / PROFESSIONAL_SUFFIX. PDF was using FHIR-style naming from a newer dictionary version.
+- **Two SSN columns (`SSN` and `SOCIAL_SEC_NUMBER`)** — both VARCHAR2 15, duplicates. PHI-sensitive even at master-data level.
+- **NPI / UPIN have UPPER doppelgangers** for case-insensitive search (NPI_UPPER VARCHAR2 40, UPIN_UPPER VARCHAR2 64).
+- **`ROE merge family is vestigial here but live on V_S_LAB_CLINIC`** — same conceptual columns, opposite live/dead status across the two views. If you're working on ROE merge logic, query V_S_LAB_CLINIC's flags, not V_S_LAB_DOCTOR's.
+- **`MARGING` typo is schema-preserved** in column names (3 deprecated columns with the typo; parallel FL_*_MERG forms also dead).
+- **`DC*` prefix family** has unclear semantics — defer probing until a query needs them.
 
 ### V_S_LAB_PHLEBOTOMIST — Collector/phlebotomist setup
 
@@ -1370,23 +1599,23 @@ Implications:
 |--------|------|-------------|
 | AA_ID | NUMBER | PK (base column GC_PHLEB.GC_PHLEB_RECID) |
 | ID | VARCHAR2 16 | Collector code (matches V_P_LAB_TUBEINFO.COLLECTION_PHLEB, V_P_LAB_TUBE.RECEIPT_TECH, etc.). Base column: GC_PHNUM |
-| LAST_NAME | VARCHAR2 50 | Last name (PDF spec; if production schema has 51 see `setup/dictionary_pdf_discrepancies.md` §1a) |
-| FIRST_NAME | VARCHAR2 80 | First name (PDF spec — was previously documented as 51; verify in production) |
-| MIDDLE_NAME | VARCHAR2 27 | Middle name |
+| LAST_NAME | VARCHAR2 50 | Last name. Real-data cap: 24 chars (max observed across all 57 rows) |
+| FIRST_NAME | VARCHAR2 80 | First name. Real-data cap: 12 chars — column is provisioned far wider than used |
+| MIDDLE_NAME | VARCHAR2 27 | Middle name. Real-data cap: 6 chars |
 | STREET1 | VARCHAR2 64 | Street address (base column GC_PHADR1) |
 | STREET2 | VARCHAR2 64 | Street address line 2 (base column GC_PHADR2) |
 | CITY | VARCHAR2 40 | City |
-| STATE | VARCHAR2 3 | State |
 | ZIP | VARCHAR2 11 | ZIP |
+| STATE | VARCHAR2 3 | State |
 | PHONE | VARCHAR2 20 | Phone |
-| SSN | VARCHAR2 15 | SSN (not on the screen per PDF) |
-| NOTES | VARCHAR2 51 | Notes/comments |
+| SSN | VARCHAR2 15 | **VESTIGIAL — NULL on all 57 rows.** Schema slot, never populated. PDF notes "not on the screen" |
+| NOTES | VARCHAR2 51 | **VESTIGIAL — NULL on all 57 rows.** Schema slot, never populated |
 | NURSE | VARCHAR2 1 | Nurse flag (Y/N) — identifies nursing-staff collectors vs. phlebotomists/other |
 | ACTIVE | VARCHAR2 1 | Active flag (Y/N) |
 
 **Collector-type decoding:**
 - Table mixes individual-user records and generic "role" codes. Generic codes observed: `NUR` (NURSINGSTAFF COLLECTED, NURSE=Y), `PHLEB` (DEFAULT PHLEBOTOMIST, NURSE=N), `PHY` (PHYSICIAN COLLECTED), `PAT` (PATIENT COLLECTED), `UNK` (UNKNOWN COLLECTOR), `SCC` (SCC TESTING ONLY, ACTIVE=N).
-- **Full roster is only 57 rows** (10 NURSE=Y, 47 NURSE=N, 56 ACTIVE=Y, 1 ACTIVE=N) — this is not a sample, it is the entire table. **Do NOT treat this as the authoritative collector list** — the real collector workforce appears to flow through Epic/HIS and bypasses this table. Only ~9% of the roster shows up in `V_P_IDN_LOG` monthly, and zero of the 10 NURSE=Y users have SoftID activity.
+- **Full roster is only 57 rows** (10 NURSE=Y, 47 NURSE=N, 56 ACTIVE=Y, 1 ACTIVE=N) — this is not a sample, it is the entire table. Column sizes verified 2026-05-01 against PDF spec (FIRST_NAME=80, LAST_NAME=50, MIDDLE_NAME=27); real data caps far below schema (24/12/6 chars). **Do NOT treat this as the authoritative collector list** — the real collector workforce appears to flow through Epic/HIS and bypasses this table. Only ~9% of the roster shows up in `V_P_IDN_LOG` monthly, and zero of the 10 NURSE=Y users have SoftID activity.
 - `NURSE='Y'` flag IS accurate where populated (Q5 confusion matrix: zero mismatches) — but populated for ~2% of actual collectors. Use as a narrow high-confidence overlay, never as the primary classifier.
 - Primary collector classification should come from `V_P_IDN_LOG` behavior + ID name patterns + HIS pass-through detection (see memory `project_unknown_collector_three_signals.md`).
 - For collector-type reporting when NURSE flag IS present: Nurse (NURSE='Y'), Other/Generic (ID in `PAT`/`PHY`/`UNK`/`PHLEB`), Phlebotomist (everything else).
@@ -1435,8 +1664,66 @@ Implications:
 
 **Notes:**
 - This view does NOT have an ACTIVE or TYPE column. `SENDING_FACITILY` is intentionally misspelled in the database (should be SENDING_FACILITY).
-- **`DESCRIPTION` is a virtual column** — per SCC PDF dictionary, it is the concatenation `LOTEXT1 || LOTEXT2 || LOTEXT3 || LOTEXT4` (each VARCHAR2 59). The PDF also documents `DESCRIPTION_LINE1` through `DESCRIPTION_LINE4` as separate accessor columns for the four underlying lines. To read individual lines without parsing 236 chars, use the `DESCRIPTION_LINE*` columns.
+- **`DESCRIPTION` is a virtual column** — per SCC PDF dictionary, it is the concatenation `LOTEXT1 || LOTEXT2 || LOTEXT3 || LOTEXT4` (each VARCHAR2 59). PDF also documents `DESCRIPTION_LINE1`–`DESCRIPTION_LINE4` as separate accessor columns, but **those columns are NOT exposed by the view in this deployment** (verified 2026-05-01 — `ALL_TAB_COLUMNS` returns only `DESCRIPTION`; `SELECT DESCRIPTION_LINE4 FROM V_S_LAB_LOCATION` raises `ORA-00904: invalid identifier`). To read individual lines, use `SUBSTR(DESCRIPTION, 1, 59)` / `SUBSTR(DESCRIPTION, 60, 59)` / etc., or query the base-table `LOTEXT1`–`LOTEXT4` directly if accessible.
 - **`STREET2` is "not on the screen"** in the SCC client per the PDF — the column exists but isn't surfaced in the standard location-setup UI.
+
+### V_S_LAB_INSURANCE — Lab-side insurance setup (thin view; AR is source of truth)
+
+**63 columns total — 31 live, 32 vestigial (DATA_LENGTH=0).** Volume: 689 rows total — the complete insurance master roster. Verified 2026-05-01.
+
+**Important context:** insurance billing logic flows through SoftAR (`V_S_ARE_INSUR`, `V_S_ARE_PAYOR`, `V_S_ARE_BILLRULES`). This Lab-side view exists for cross-references from order/stay records but **all billing/payor/EDI/medigap fields are vestigial here** — they were once populated on legacy SCC versions and remain only as schema slots for 4.0.7.1 compatibility.
+
+#### Identity & Address
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 22 | PK (NOT NULL) |
+| ID | VARCHAR2 15 | Insurance code (FK target for V_P_LAB_ORDER.INSURANCE1_ID etc.) |
+| NAME | VARCHAR2 100 | Insurance name |
+| NAME_UPPER | VARCHAR2 400 | Uppercase computed search column (same pattern as `V_S_LAB_TEST_GROUP.GTNAME_UPPER`) |
+| ACTIVE | VARCHAR2 1 | Active flag |
+| STREET1 / STREET2 | VARCHAR2 64 | Address |
+| CITY | VARCHAR2 40 | City |
+| ZIP | VARCHAR2 11 | ZIP |
+| STATE | VARCHAR2 3 | State |
+| COUNTRY | VARCHAR2 30 | Country |
+| PHONE1 / PHONE2 | VARCHAR2 20 | Phone |
+| FAX_NUMBER | VARCHAR2 20 | Fax |
+| CONTACT | VARCHAR2 40 | Contact name |
+
+#### Cross-System Identifiers
+
+| Column | Type | Description |
+|--------|------|-------------|
+| PAYOR_ID | VARCHAR2 9 | Likely cross-link to AR payor (`V_S_ARE_PAYOR.PYOCODE`) |
+| PROVIDER_NUMBER | VARCHAR2 11 | Provider number |
+| INSURANCE_GROUP | VARCHAR2 9 | Insurance group code |
+| FORMAT | VARCHAR2 18 | Format code |
+
+#### Workflow / Auth Flags (CHAR 1, all live)
+
+| Column | Description |
+|--------|-------------|
+| FLAG_DIAGNOSIS_MANDATORY | Diagnosis required at order |
+| TYPE_OF_BILLING | Type of billing |
+| FLAG_AUTH_NUMBER_REQUIRED | Authorization number required |
+| FLAG_GRANT_BILLING_INSUR | Grant billing-insurance flag |
+| FLAG_ROE_PREVENT_ORDER_MERGE | ROE prevent-order-merge flag |
+| REDIRECT_TO_PRINS | Redirect to primary insurance |
+| COLLECT_FULL_AMOUNT_AT_OE | Collect full amount at order entry |
+| SKIP_INSURANCE_HIS | Skip insurance for HIS |
+| SKIP_INSURANCE_HIS_TOTALLY | Skip insurance for HIS (totally) |
+| CHECK_ABN_CONDITIONS | Check ABN conditions |
+| CHECK_MED_NECESSITY_CONDITIONS | Check medical necessity |
+| DIAGNOSIS_REQUIRED_AT_OE | Diagnosis required at OE |
+
+#### Vestigial / Schema Slots (DATA_LENGTH=0 — 32 columns)
+
+All billing/payor/EDI/tax-related fields, kept for compatibility. **Do not query these — they cannot hold data.**
+
+`COPAYMENT_AMOUNT`, `INSURANCE_TAX_1`/`_2`/`_3`, `TAX_DATE_1`/`_2`/`_3`, `PRICE_SCHEDULE`, `OPTION_HEADER_NAME`, `REDIRECT_PRICES`, `MEDIGAP_NUMBER`, `PAYOR_CLAIM_OFFICE_ID`, `TYPE_OF_BILLING_ECS`, `BILLER_ID`, `PAYOR_CONTRACT`, `PAYOR_CLASS`, `PAYOR_GROUP`, `PAPER_CLAIMS`, `PAPER_FORMAT`, `TYPE`, `ELECTRONIC_BILLING`, `CLIENT_BILLING_FLAG`, `OTHER_IN_AGING`, `ELECTRONIC_REMITTANCE`, `AUTO_WRITEOFF`, `CAN_BILL_VENIP_AND_TRAVEL`, `COPAYMENT_REQUIRED`, `MEDIGAP_PLAN_EXISTS`, `VENIP_DEFAULT_IN_OE`, `ACCEPT_ASSIGNMENT`, `CHECK_TAX_CONDITIONS`, `FLAG_CREATE_CATEGORY_RECORDS`.
+
+The 32-vs-31 split (almost half the schema is dead) confirms the AR-is-source-of-truth pattern — all the dead fields are exactly the billing/payor/EDI domain that AR owns.
 
 ### V_S_LAB_TEST_GROUP — Group/orderable test setup
 
@@ -1506,7 +1793,7 @@ Implications:
 - Departments are per-facility — e.g., TCHEM (TUH Chemistry), JCHEM (JNS Chemistry), FCHEM (FC Chemistry).
 - `LOCATION_ID` identifies the facility: TUH, JNS, FC, EPC, CH, WFH, NE, ADL, TQUC, TQUH, TVIA, THST, etc.
 - Section names in NAME: CHEMISTRY, COAGULATION, HEMATOLOGY, POINT OF CARE, REFERENCE LAB, BLOOD BANK, URINALYSIS, MICROBIOLOGY, IMMUNOLOGY, MOLECULAR, PATHOLOGY, CYTOLOGY, VIROLOGY, HLA, BILLING, PHLEBOTOMY, RESEARCH.
-- **`DESCRIPTION` is a virtual column** — per SCC PDF dictionary, it is the concatenation `DPTEXT1 || DPTEXT2 || DPTEXT3 || DPTEXT4` (each VARCHAR2 59). The PDF also documents `DESCRIPTION_LINE1` through `DESCRIPTION_LINE4` as separate accessor columns for the four underlying lines. Use `DESCRIPTION_LINE*` to read individual lines without parsing the 236-char concatenated string.
+- **`DESCRIPTION` is a virtual column** — per SCC PDF dictionary, it is the concatenation `DPTEXT1 || DPTEXT2 || DPTEXT3 || DPTEXT4` (each VARCHAR2 59). PDF also documents `DESCRIPTION_LINE1`–`DESCRIPTION_LINE4` as separate accessor columns, but **those columns are NOT exposed by the view in this deployment** (verified 2026-05-01 — same finding as V_S_LAB_LOCATION). To read individual lines, use `SUBSTR(DESCRIPTION, 1, 59)` / `SUBSTR(DESCRIPTION, 60, 59)` / etc., or query the base-table `DPTEXT1`–`DPTEXT4` directly if accessible.
 
 ### V_S_LAB_WORKSTATION — Workstation definition
 
@@ -1568,29 +1855,60 @@ Implications:
 
 ### V_S_LAB_SPECIMEN — Specimen tube type definitions
 
+**42 columns total — 24 live, 18 vestigial (DATA_LENGTH=0).** Volume: 235 rows total — the complete tube-type roster, not a sample. Verified 2026-05-01.
+
+#### Identity & Naming
+
 | Column | Type | Description |
 |--------|------|-------------|
-| AA_ID | NUMBER | PK |
-| ID | VARCHAR2 8 | Tube type code (NOT NULL) |
-| NAME | VARCHAR2 50 | Tube name (e.g., "Gold SST", "Purple EDTA") (NOT NULL) |
-| ACTIVE | VARCHAR2 1 | Active flag |
+| AA_ID | NUMBER 22 | PK (NOT NULL) |
+| ID | VARCHAR2 8 | Tube type code (NOT NULL). Matches `V_S_LAB_TEST_GROUP_SPECIMEN.SAMPLE_TYPE` and `V_S_LAB_TEST_SPECIMEN.COLLECTION_CONTAINER` |
+| NAME | VARCHAR2 50 | Tube name (NOT NULL) — e.g., "Gold SST", "Purple EDTA". Human-readable description for the compendium |
 | CATEGORY | VARCHAR2 1 | Category (NOT NULL) |
-| DRAW_UNITS | VARCHAR2 40 | Draw units |
+| ACTIVE | VARCHAR2 1 | Active flag (Y/N) |
+
+#### Specimen / Draw Attributes
+
+| Column | Type | Description |
+|--------|------|-------------|
 | DRAW_TYPE | VARCHAR2 8 | Draw type |
-| ALIQUTING_TUBE | VARCHAR2 8 | Aliquoting tube type |
-| PROCESSING_CONTAINER | VARCHAR2 1 | Processing container flag |
-| DELIVERY_RACK | VARCHAR2 10 | Delivery rack |
-| CAPACITY | VARCHAR2 | Capacity |
-| MIN_VOLUME | VARCHAR2 | Minimum volume |
+| DRAW_UNITS | VARCHAR2 40 | Draw units |
+| ALIQUTING_TUBE | VARCHAR2 8 | Aliquoting tube type. **Misspelled column name** preserved in DB (should be "ALIQUOTING") |
+| TYPE_SOURCE | VARCHAR2 12 | Type source — replaces deprecated `SPEC_TYPE` |
+| TYPE_MODIFIER | VARCHAR2 12 | Type modifier — replaces deprecated `SPEC_TYPE_MOD` |
+| ADDITIVES_PRESERVATIVES | VARCHAR2 9 | Additives/preservatives — replaces deprecated `SPEC_ADDITIVE` |
 | HAZARD | VARCHAR2 15 | Hazard info |
-| TYPE_SOURCE | VARCHAR2 12 | Type source |
-| TYPE_MODIFIER | VARCHAR2 12 | Type modifier |
-| ROBOTIC | VARCHAR2 | Robotic flag |
-| ADDITIVES_PRESERVATIVES | VARCHAR2 9 | Additives/preservatives |
+
+#### Workflow & Processing Flags (all VARCHAR2 1, Y/N)
+
+| Column | Description |
+|--------|-------------|
+| AUTOVERIFY_COLLECTION | Auto-verify collection flag |
+| PHLEBOTOMY_SPEC | Phlebotomy specimen flag |
+| PROCESSING_CONTAINER | Processing container flag |
+| GROUP_BY_PLATE | Group-by-plate flag |
+| INCOMING_CONSULTATION | Incoming consultation flag |
+| FAKE_CONTAINER | **Live flag — 100% populated across all 235 rows** (verified 2026-05-01). PDF documented this as "DEPRECATED but still indexed" — that claim is **refuted**; the column is fully active in this deployment |
+
+#### Label Printing
+
+| Column | Type | Description |
+|--------|------|-------------|
+| PRINT_LABEL | VARCHAR2 1 | Print label flag (Y/N) |
+| AUTO_PRINT_LABEL | VARCHAR2 1 | Auto-print label flag (Y/N) |
+| PRINT_MEDIA_LABEL_AT_RCV | VARCHAR2 1 | Print media label at receipt flag (Y/N) |
+| LABEL_TEMPLATE | NUMBER 22 | Label template ID |
+| DELIVERY_RACK | VARCHAR2 10 | Delivery rack |
+| BLOCK_PREF | VARCHAR2 3 | Block preference |
+
+#### Vestigial / Schema Slots (DATA_LENGTH=0 — 18 columns, can hold no data)
+
+`COMMENT_TEXT`, `IS_COLLECTION`, `EXTENSION`, `CAPACITY`, `MIN_VOLUME`, `VENIP_SPEC`, `CAPIL_SPEC`, `URINE_SPEC`, `SPEC_TYPE`, `SPEC_TYPE_MOD`, `SPEC_ADDITIVE`, `IS_INTERVAL_COL`, `ROBOTIC`, `PARENT`, `AUX_TUBE`, `VOL_COMMENT`, `CAPACITY_AA_ID`, `CAPACITIES_SORT`. These match the PDF deprecation list exactly (`SPEC_TYPE`/`SPEC_TYPE_MOD`/`SPEC_ADDITIVE` → use `TYPE_SOURCE`/`TYPE_MODIFIER`/`ADDITIVES_PRESERVATIVES`; `CAPACITY`/`MIN_VOLUME`/`VOL_COMMENT` → use `V_S_LAB_TUBE_CAPACITY`).
 
 **Notes:**
-- `ID` matches `V_S_LAB_TEST_GROUP_SPECIMEN.SAMPLE_TYPE` and `V_S_LAB_TEST_SPECIMEN.COLLECTION_CONTAINER`.
-- `NAME` is the human-readable tube description for the compendium.
+- 235 rows = the entire tube-type roster (not a sample). Most queries will join here for tube name/category/category lookups, not aggregate over it.
+- `FAKE_CONTAINER` is the only PDF-flagged-deprecated column that's actually live in this deployment — single-char flag, populated on every tube type.
+- `ALIQUTING_TUBE` typo is preserved at the schema level — must be queried with the misspelling.
 
 ### V_S_LAB_TEST_SPECIMEN — Test specimen/container requirements (per test/workstation)
 
@@ -1734,7 +2052,7 @@ Implications:
 
 ### V_S_LAB_TEST — Individual/component test setup
 
-Large table (100+ columns). Key columns grouped by category below.
+**202 columns total — 159 live, 43 vestigial (DATA_LENGTH=0).** Volume: **17,714 rows** — the component-level test compendium (individual analytes; group/orderable tests live on V_S_LAB_TEST_GROUP). Verified 2026-05-01. Key columns grouped by category below; the wider vestigial set is enumerated in its own subsection.
 
 #### Identity & Classification
 
@@ -1920,12 +2238,51 @@ Large table (100+ columns). Key columns grouped by category below.
 | COMMENTS_AND_TAGS | VARCHAR2 | Comments and tags |
 | TRC_THRE | VARCHAR2 | Trace threshold (?) |
 
+#### PDF-confirmed additional columns (verified live 2026-05-01)
+
+PDF flagged these as "additional columns" beyond the workhorse set; all are populated/usable:
+
+| Column | Type | Notes |
+|--------|------|-------|
+| PRECISION_NEW | NUMBER 22 (10) | Modern precision column supporting **negative range (−7 to +7)**. Coexists with legacy `PRECISION` (NUMBER) and `PRECISION_POSITIVE` (CHAR 1). Use PRECISION_NEW for new queries needing negative precision; legacy still populated |
+| DEFAULT_SOURCE | VARCHAR2 15 | Micro test default source |
+| NOSOCOMIAL_INF_AFTER | NUMBER 22 (5) | Hours after which a result is classified nosocomial |
+| IS_PRINT_LBL_PROMPT_RESULT | VARCHAR2 1 | Print prompt-test result on labels flag |
+| HOLD_AUTOVERIF | VARCHAR2 1 | Hold autoverification (legacy short name) |
+| HOLD_AUTOVERIFICATION | VARCHAR2 1 | **Duplicate of HOLD_AUTOVERIF** — both populated, both adjacent (cols 175/176). Pick HOLD_AUTOVERIFICATION for the modern form |
+| MES_TEST_COMMENT | VARCHAR2 5 | Test comment message ID (FK by code → V_S_LAB_CANNED_MESSAGE) |
+| FL_CALC_NEEDS_RMOD | VARCHAR2 1 | Calculated test needs RMOD-style amendment when components change |
+| FL_DO_NOT_MERGE_ST_ORDERS | VARCHAR2 1 | Standing-order merge suppression |
+| FL_MANUAL_MERGE_DO_NOT_MERGE | VARCHAR2 1 | Manual-merge suppression |
+| FL_ELR_RESULT_REPORTABLE | VARCHAR2 1 | ELR result reportable |
+| FL_ELR_ORDER_REPORTABLE | VARCHAR2 1 | ELR order reportable |
+
+#### Generically-numbered FL columns (semantics unverified)
+
+`FL_10` (col 35) and `FL_12` (col 37) sit among the named FL_* set. Possibly reserved slots, undocumented flags, or pending rename. Don't filter on them without confirming purpose.
+
+#### Vestigial / Schema Slots (DATA_LENGTH=0 — 43 columns)
+
+| Family | Columns |
+|--------|---------|
+| Billing codes (PDF: "added for 4.0.7.1 compat, not used") | `CPT_BASIC_CODE_1`–`8`, `CPT_ALTERNATE_CODE_1`–`8`, `BILLING_CODE_1`–`8`, `CPT_EXP_DATE_1`–`8` (32 columns) |
+| Label text | `LBL_TEXT_1`, `LBL_TEXT_2`, `LBL_TEXT_3` |
+| QC | `QC_DISPLAY_WARNING`, `QC_TIME_LIMIT` |
+| Workload | `CAP_ROUTINE_WEIGHT`, `CAP_STAT_WEIGHT` |
+| Other | `FL_IS_BBANK_TEST`, `FL_ANALIZE_COMPS_TOGETHER`, `CHART_REPORT_NO`, `SEROLOGY_TEST` |
+
+**Note on the billing codes**: the schema preserves all 32 CPT/billing slots as 4.0.7.1 compatibility but they cannot hold data here. **Authoritative CPT source is `V_S_ARE_BILLRULES.BRCPTCODE`** (joined via `BRTSTCODE = test component ID`).
+
 **Notes:**
 - `FL_NOT_IN_TAT_CALC = 'Y'` excludes a test from TAT calculations — important for TAT reports.
 - `TAT_STAT`, `TAT_URGENT`, `TAT_TIMED` define expected TAT limits per priority.
 - Range columns (PANIC, ABSURD, NORMAL) are split by sex: `*_FLOW`/`*_FHIGH` (female), `*_MLOW`/`*_MHIGH` (male).
-- CPT_BASIC_CODE_1–8 are **NOT populated** in this system. Use `V_S_ARE_BILLRULES.BRCPTCODE` (joined via `BRTSTCODE = test component ID`) as the authoritative CPT source.
+- **`PRECISION_NEW` is the modern precision column** (supports −7 to +7); `PRECISION` and `PRECISION_POSITIVE` are legacy. All three coexist.
+- **`HOLD_AUTOVERIF` and `HOLD_AUTOVERIFICATION` are duplicates** — pick HOLD_AUTOVERIFICATION.
+- **`NAME_UPPER` (VARCHAR2 236)** is an uppercase computed search column (same pattern as V_S_LAB_TEST_GROUP.GTNAME_UPPER and V_S_LAB_INSURANCE.NAME_UPPER).
 - Many FL_ flags are `'N'` by default. Key flags for reporting: `FL_NOT_IN_TAT_CALC`, `FL_AUTOREPORTABLE`, `FL_HIDDEN`, `FL_DONOTREPORT`.
+- CPT_BASIC_CODE_1–8 are **NOT populated** in this system (DATA_LENGTH=0 — see vestigial subsection above). Use `V_S_ARE_BILLRULES.BRCPTCODE` as authoritative.
+- Volume: 17,714 rows. Component-level (individual analytes); use V_S_LAB_TEST_GROUP for orderable group/panel tests.
 - Join to group tests via `V_S_LAB_TEST_COMPONENT` (component → group relationship).
 
 ### V_S_LAB_CANNED_MESSAGE — Canned message setup (cross-module shared)
@@ -1944,7 +2301,7 @@ Large table (100+ columns). Key columns grouped by category below.
 | EXP_DATE / EXP_DT | NUMBER / DATE | Expiration date (numeric pair + DATE). ~23% of rows are past their EXP_DT. ACTIVE and EXP_DT are independent dimensions (some active rows have past expiration dates and vice versa). Base-table column is `MESEXDT` |
 | NEW_LINE | VARCHAR2 1 | Newline indicator. The only column with any nulls (~16% blank); rest are 100% populated |
 | CATEGORY | VARCHAR2 | Category enum — see distribution table below |
-| DISCARD_CONTAINER | NUMBER 5 | Discard-container flag (100% populated; semantics unverified — PDF spec says NUMBER, prior CLAUDE.md guess was VARCHAR2; see `setup/dictionary_pdf_discrepancies.md` §1b) |
+| DISCARD_CONTAINER | NUMBER(5,0) | **Always 0 — fully vestigial in this deployment.** Verified 2026-05-01: 9,144/9,144 rows = 0 across all 2,418 distinct message IDs, with no within-message variance. Schema slot exists per PDF (which documents it as a meaningful flag), but is functionally unused here. Don't filter on it expecting to find non-zero rows |
 
 #### CATEGORY enum (verified, 18 values)
 
@@ -2870,6 +3227,195 @@ V_P_ARE_BILLERROR.BERCODE → V_S_ARE_ARERROR.ERRCODE  (error definition lookup;
 
 ## SoftMic (Microbiology) Views — Detail
 
+### V_P_MIC_ACTIVE_ORDER — Active microbiology orders (cross-module FK to SoftLab)
+
+**198 columns total** — by far the widest view in this dictionary. Order-grain (one row per V_P_LAB_ORDER it represents). Volume: ~430 micro orders/day = ~6.7% of total order volume. Verified 2026-05-01.
+
+#### Identity & Cross-Module Joins
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 22 (NOT NULL) | PK of this view |
+| ACTIVE_AA_ID | NUMBER 22 | **Cross-module FK → V_P_LAB_ORDER.AA_ID. 100% populated, no orphans** (verified 12,884/12,884 match rate over 30 days). Use this as the canonical join to SoftLab |
+| ORDER_NUMBER | VARCHAR2 11 | Human-readable order number (matches V_P_LAB_ORDER.ID) |
+| ORDER_NUM | VARCHAR2 11 | **Duplicate of ORDER_NUMBER** (legacy short-form) — same value in samples |
+| SPEC_PROC_ID | VARCHAR2 5 | Specimen procedure code (e.g., culture-throat) |
+| SOURCE | VARCHAR2 15 | Specimen source code |
+| SITE | VARCHAR2 255 | Site/site-detail (free-text-ish) |
+| INSTRUMENT_ID | VARCHAR2 5 | Instrument code |
+| TUBE_ID | NUMBER 22 | Tube identifier |
+
+#### Workflow Timestamps (numeric/DATE triple pattern, `-1` sentinel)
+
+The micro workflow has 11 timestamp slots, each as a numeric `*_DATE` + numeric `*_TIME` + canonical `*_DT` (DATE) triple. **`-1` is the "not set" sentinel** for the numeric pair when the corresponding event hasn't occurred yet (the DATE column is NULL in those cases). Prefer the `*_DT` column for date predicates.
+
+| Family | Stage |
+|--------|-------|
+| `COLL_*` | Specimen collected |
+| `RCVD_*` | Specimen received in lab |
+| `RCVD_IN_MIC_*` | Received specifically in micro section (often = `RCVD_*`) |
+| `PLATED_*` | Plated for culture |
+| `TECH_VERIF_*` | Tech-verified |
+| `PRELIM_*` | Preliminary result posted |
+| `INTERIM_*` | Interim result posted |
+| `FINAL_*` | Final result posted |
+| `REP_*` | Reported |
+| `ADM_*` | Admission timestamp |
+| `WORKLOAD_*` | Workload-counter timestamp |
+
+Plus `ORDER_STATUS_DATE` (DATE) + `ORDER_STATUS_TIME` (NUMBER) — when the current ORDER_STATUS was set.
+
+#### Computed Status
+
+| Column | Type | Description |
+|--------|------|-------------|
+| ORDER_STATUS | VARCHAR2 9 | **Computed CASE expression** per PDF (not stored). Verified enum (30-day, ~12.9K rows): `FINAL` (70.07%), `CANCELLED` (11.9%), `PRELIM` (9.5%), `INTERIM` (6.01%), `PENDING` (2.53%). Lifecycle: PENDING → PRELIM → INTERIM → FINAL (or CANCELLED at any point) |
+| ORDER_STATUS_TECH | VARCHAR2 16 | Tech who set the current ORDER_STATUS |
+
+**PDF claim refuted:** PDF documented both `ORDER_STATUS` and `TEST_STATUS` as computed CASE columns on this view. **`TEST_STATUS` does NOT exist on V_P_MIC_ACTIVE_ORDER** (verified — `ALL_TAB_COLUMNS` returns nothing; `SELECT TEST_STATUS FROM V_P_MIC_ACTIVE_ORDER` raises `ORA-00904`). Likely lives on `V_P_MIC_TEST` instead.
+
+#### Tech / People (with ~7 duplicate-column legacy pairs)
+
+Each tech role has both a modern `*_TECH_ID` and a legacy `*_TECH` column carrying the same value. Pick the modern form (`*_TECH_ID`).
+
+| `*_TECH_ID` (modern) | `*_TECH` (legacy) | Role |
+|----------------------|-------------------|------|
+| COLL_TECH_ID | COLL_TECH | Collecting tech |
+| RCVD_TECH_ID | RCVD_TECH | Receiving tech (lab-wide) |
+| RCVD_IN_MIC_TECH_ID | RCVD_IN_MIC_TECH | Receiving tech (micro section) |
+| PLATED_TECH_ID | PLATED_TECH | Plating tech |
+| TECH_VERIF_TECH_ID | TECH_VERIF_TECH | Verifying tech |
+| PRELIM_TECH_ID | PRELIM_TECH | Tech who posted prelim |
+| FINAL_TECH_ID | FINAL_TECH | Tech who posted final |
+| INTERIM_TECH_ID | (no legacy pair) | Tech who posted interim |
+
+Plus `REQ_DOCTOR_ID` (modern, VARCHAR2 15) ↔ `REQ_DR` (legacy) for the requesting physician.
+
+#### Workflow Flag Families (~90 columns)
+
+The view carries an extensive flag matrix tracking every state transition and report-print event:
+
+- **Result-stage flags**: `FLAG_PRELIM_RESULT`, `FLAG_INTERIM_RESULT`, `FLAG_FINAL_RESULT`, `FLAG_FINAL_RESULT_MODIFIED`, `FLAG_UPDATE_RESULT`, `FLAG_EDITED_RESULT`, `FLAG_AMENDED_ORDER`, `FLAG_AMENDED_REPORT_PRINTED`
+- **Report-print flags by recipient**: `FLAG_PRELIM_RES_PRINTED` / `FLAG_INTERIM_RES_PRINTED` / `FLAG_FINAL_RES_PRINTED` (default), `FLAG_NURSE_*_RES_PRINTED` (nurse copy), `FLAG_CHART_*_RES_PRINTED` (chart copy), `FLAG_DISCH_CUM_REP_PRINTED`, `FLAG_INTERIM_CH_REPORT_PRINTED`
+- **Recipient-2/3/4 report flags**: `FLAG_R2U_*_RES_PRINTED`, `FLAG_R3V_*_RES_PRINTED`, `FLAG_R4W_*_RES_PRINTED` — three additional recipients with prelim/interim/final variants each (9 columns total)
+- **Workflow-control flags**: `FLAG_INTRF_RES_POSTED`, `FLAG_INTRF_RES_FOR_QC`, `FLAG_POSITIVE_READING`, `FLAG_GS_FAIL`, `FLAG_PATH_REVIEWED`, `FLAG_SPECIMEN_DOWNLOADED`, `FLAG_LABEL_PRINTED`, `FLAG_CANCELLED`, `FLAG_MICRO_ORDER`, `FLAG_IS_ACTIVE_RULE`, `FLAG_FAM_STUDY`, `FLAG_RES_AFTER_DISCH`, `FLAG_RES_AFTER_DISCH_PRINTED`, `FLAG_SHORT_CANC_REASON`
+- **External / interface**: `FLAG_ORDER_SENT_ELR`, `FLAG_ELR_REPORT_PRINTED`, `FLAG_LAB_SYNC`
+- **Specimen state**: `FLAG_SPECIMEN_COLLECTED`, `FLAG_SPECIMEN_RECEIVED`
+- **Supplemental / corrected reports**: `FLAG_SUPL_REPORT_RESULT`, `FLAG_SUPL_REPORT_PRINTED`, `FLAG_SUPL_RESULT_PRESENT`, `FLAG_CORR_REPORT_RESULT`, `FLAG_CORR_REPORT_PRINTED`, `FLAG_CORR_RESULT_PRESENT`
+- **SDR (Sentinel/Standing/Surveillance ?) flags**: `FLAG_SDR_POSTED`, `FLAG_SDR_RESS`, `FLAG_SDR_WRKL`, `FLAG_SDR_OENT`
+- **Two-letter abbreviated flags** (semantics unverified): `FLAG_IP`, `FLAG_IQ`, `FLAG_POS`, `FLAG_RP`/`RI`/`RF`, `FLAG_PR`, `FLAG_NP`/`NI`/`NF`, `FLAG_CP`/`CI`/`CF`
+- **Single-letter flags** (semantics unverified): `FLAG_C`, `FLAG_D`, `FLAG_P`, `FLAG_I`, `FLAG_F`, `FLAG_L`, `FLAG_X` — likely lifecycle stages but not yet probed
+- **Other**: `FLAG_SEROLOGY_ORDER` (NUMBER 22), `OTHER_FLAGS` (NUMBER 22), `FLAG_B1DRAW`
+
+All single-VARCHAR2-1 flags are Y/N. Most are `'N'` on routine orders.
+
+#### B1\* Amendment Block
+
+A parallel "B1" prefix family appears throughout the view:
+- `B1CASE` (VARCHAR2 4000), `B1STUDY_0`–`B1STUDY_4` (5 cols), `B1WRKLDATE`/`B1WRKLTIME` (NUMBER, `-1` sentinel), `FLAG_B1DRAW`, `B1FLAGS1_FLAGS` (DATA_LENGTH=0), `B1FLAGS2_FLAGS` (DATA_LENGTH=0)
+
+These are **empty on routine orders** (verified in spot-sample). The pattern strongly suggests B1 stores amendment / revision-block data populated only when the order is modified after initial posting. Hypothesis not yet directly verified — flagged for future probing.
+
+#### Other Useful Columns
+
+| Column | Type | Description |
+|--------|------|-------------|
+| WARD_ID | VARCHAR2 15 | Ordering ward (FK by code → V_S_LAB_CLINIC.ID) |
+| ISO_WARD_ID / ISO_WARD | VARCHAR2 15 | Isolation-ward code (legacy duplicate ISO_WARD) |
+| LOCATION / LOC | VARCHAR2 4 | Performing facility (legacy duplicate LOC) |
+| DEPOT | VARCHAR2 11 | Site/depot code |
+| MULTISITE_LOCATION | VARCHAR2 1 | Multi-site flag |
+| HOSP_SERV_CODE | VARCHAR2 15 | Hospital service code |
+| PRIORITY | CHAR 1 | Priority (S/R/T pattern) |
+| PATIENT_TYPE / PAT_TYPE | CHAR 1 | Patient type (legacy duplicate PAT_TYPE) |
+| DIAGNOSIS / DIAGNOSIS_CODE | VARCHAR2 11 | Diagnosis text + ICD code (separate populations) |
+| STUDY_0 – STUDY_4 | VARCHAR2 5 | Up to 5 study assignments |
+| ISOLATION | VARCHAR2 5 | Current isolation code |
+| **ISOLATEION** | VARCHAR2 5 | **Schema-preserved typo of ISOLATION** — both columns exist; pick `ISOLATION` |
+| ESO_CODE | VARCHAR2 5 | ESO (electronic surgical order) code |
+| CASE | VARCHAR2 4000 | Free-text case description (PHI-adjacent) |
+| QA_CODE | VARCHAR2 1 | QA code |
+| PROGRAM | VARCHAR2 5 | Program code |
+| MICRO_OE_COMMENT | CLOB 4000 | Order-entry comment (PHI-adjacent free text) |
+| ANTIBIOTIC_COMMENT | VARCHAR2 80 | Antibiotic comment |
+| ANTIBIOTIC_1 – ANTIBIOTIC_4 | VARCHAR2 7 | Up to 4 antibiotic codes |
+| CURRENT_ANTIBIOTIC_1 – CURRENT_ANTIBIOTIC_4 | VARCHAR2 7 | Up to 4 *current* antibiotic codes (separate from ANTIBIOTIC_*) |
+| WORKLIST_SEQ_NUM | NUMBER 22 | Worklist position |
+| **PATHEVIEW_SORT** / **PATHEVIEW_AA_ID** | NUMBER 22 | **Schema-preserved typo of PATHREVIEW** (missing `R`) — sort + FK to pathology review |
+| TECH_REVIEWED | VARCHAR2 1 | Tech-reviewed flag |
+| ORDNOP_OPTKEY / ORDSTUDY_OPTKEY / ORDMARK_OPTKEY | NUMBER 22 | Internal SCC option keys (sort/lookup defaults; mirror AA_ID in samples) |
+
+#### Vestigial / Schema Slots (DATA_LENGTH=0 — 7 columns, can hold no data)
+
+`B1FLAGS1_FLAGS`, `B1FLAGS2_FLAGS`, `BILLING_NUM`, `FLAG_GSN`, `FLAG_GSP`, `FLAG_V`, `MRN`. The `MRN` column being vestigial is notable — MRN flows in via `ACTIVE_AA_ID` → `V_P_LAB_ORDER` → `V_P_LAB_STAY` → `V_P_LAB_PATIENT.ID` rather than being denormalized here.
+
+#### Schema-preserved typos
+
+- `ISOLATEION` (col 177) — should be `ISOLATION`. Both columns exist; ISOLATION is the canonical one.
+- `PATHEVIEW_SORT` (col 119), `PATHEVIEW_AA_ID` (col 120) — should be `PATHREVIEW_*` (missing the `R`). Use as-is.
+
+**Notes:**
+
+- **Order-grain, not test-grain**: 1:1 with V_P_LAB_ORDER. For test-level micro details (component results, isolates, sensitivities), join `V_P_MIC_TEST` etc.
+- **`ACTIVE_AA_ID` is the canonical cross-module join key** — 100% populated, FK to V_P_LAB_ORDER.AA_ID. Inner join is safe.
+- **`ORDER_STATUS` is computed CASE per PDF** — clean 5-value enum confirms. Don't expect index-friendly behavior on filters; precompute or include the SoftLab parent's status if needed for performance.
+- **`TEST_STATUS` does NOT exist on this view** despite PDF claim — refuted (likely on V_P_MIC_TEST).
+- **`-1` is the "not set" sentinel** for all numeric `*_DATE`/`*_TIME` columns when the corresponding event hasn't occurred yet. The DATE column is NULL in those cases. Use the DATE column for predicates.
+- **B1\* fields are amendment data** — empty in routine samples; populated only when the order is modified (hypothesis, not directly verified).
+- **Single-letter `FLAG_C`/`D`/`P`/`I`/`F`/`L`/`X` semantics unverified** — likely lifecycle stages but not yet enumerated.
+- **9+ duplicate-column legacy pairs** — pick the modern `*_ID` form. Same pattern as V_P_LAB_TEST_RESULT's PERFORMING_ORG/PERF_ORG block.
+- **Two schema-preserved typos**: `ISOLATEION` (use `ISOLATION`), `PATHEVIEW_*` (use as-is — both columns ARE the typo'd form).
+- **PDF claim about deprecated short-form flags (CALLED, POSTED) is unverifiable** — those exact column names don't exist on the view. They may have been renamed to FLAG_* form already, or removed entirely.
+
+### SoftMic comment view family — 7 grain-specific views over a shared comment skeleton
+
+**Total comment volume: ~11.78M rows across 6 active views** (one is vestigial). Verified 2026-05-01. Comment-heavy module — substantially more comments than the SoftLab equivalent V_P_LAB_INTERNAL_NOTE (2.6M rows).
+
+#### Family pattern
+
+All 7 views share a common **comment skeleton** of 12 columns plus 1 PK + parent FK + sort, varying only in author-column convention and parent FK target:
+
+| Common skeleton column | Type | Purpose |
+|------------------------|------|---------|
+| AA_ID | NUMBER 22 (NOT NULL) | PK |
+| TEXT | VARCHAR2 4000 | Comment body (PHI-adjacent) |
+| TYPE | CHAR 1 | Comment-type discriminator |
+| FLAG_SUP_RES | VARCHAR2 1 | Supplemental result flag |
+| FLAG_COR_RES | VARCHAR2 1 | Corrected result flag |
+| FLAG_SND_HIS | VARCHAR2 1 | Send-to-HIS flag |
+| FLAG_REV_TST | VARCHAR2 1 | Revised-test flag |
+| FLAG_SOFT_BREAK | VARCHAR2 1 | Soft line-break flag |
+| MOD_DATE / MOD_TIME / MOD_DT | NUMBER / NUMBER / DATE | Modification timestamp triple |
+
+Plus author column(s) that vary by view (see table below) and a parent FK + sort pair specific to each grain.
+
+#### Per-view summary
+
+| View | Cols | Rows | Parent FK column | Sort column | Author columns | Status |
+|------|------|------|------------------|-------------|----------------|--------|
+| **V_P_MIC_TESTCOMM** | 15 | **6,318,372** | TEST_AA_ID → V_P_MIC_TEST.AA_ID | TEST_SORT | TECH_ID + TECHNIK | **Workhorse #1** |
+| **V_P_MIC_MEDIACOMM** | 15 | **3,420,647** | MEDIA_AA_ID → V_P_MIC_MEDIA.AA_ID | MEDIA_SORT | TECH_ID + TECHNIK | **Workhorse #2** |
+| **V_P_MIC_ISOCOMM** | 15 | **2,006,608** | ISOLATE_AA_ID → V_P_MIC_ISOLATE.AA_ID | **I1_U1_SORT** (cryptic) | TECH_ID + TECHNIK | **Workhorse #3** |
+| V_P_MIC_THERAPYCOMM | 15 | 43,942 | SENSI_AA_ID → V_P_MIC_SENSI.AA_ID | SENSI_SORT | **TECHNIK_ID + TECHNIK** (no TECH_ID) | Modest |
+| V_P_MIC_ORDER_COMM | 14 | 13,935 | ACTIVE_ORDER_AA_ID → V_P_MIC_ACTIVE_ORDER.AA_ID | ACTIVE_ORDER_SORT | TECHNIK only | Live order-level |
+| V_P_MIC_COMMON_MEDIACOMM | 14 | 2,005 | TEST_AA_ID (NOT MEDIA_AA_ID — name is misleading) | TEST_SORT | TECHNIK only | See note below |
+| **V_P_MIC_COMM** | 14 | **0** | ACTIVE_ORDER_AA_ID | ACTIVE_ORDER_SORT | TECHNIK only | **VESTIGIAL — DEAD TWIN of ORDER_COMM** |
+
+**Notes:**
+
+- **V_P_MIC_COMM is fully empty** despite an identical schema to V_P_MIC_ORDER_COMM. They're not aliases (V_P_MIC_ORDER_COMM has 14K rows). V_P_MIC_COMM is the dead twin; **don't query it**. The discrepancies-file naming (V_P_MIC_COMM = "general", V_P_MIC_ORDER_COMM = "categorized") was a PDF-side hypothesis not borne out by the data — the only operational order-level comment view is V_P_MIC_ORDER_COMM.
+- **V_P_MIC_COMMON_MEDIACOMM has a misleading name** — the schema has `TEST_AA_ID`, not `MEDIA_AA_ID`. Despite "MEDIACOMM" in the name, this is structurally a test-level comment view. Two interpretations not yet resolvable without PHI-safe sampling:
+  1. **Canned library hypothesis** (per discrepancies file): `TEST_AA_ID` points to a "library entry" record rather than a real test. The 2K row count is consistent with a canned-text library size.
+  2. **Older variant hypothesis**: legacy test-level comment view that was never deprecated; gets occasional writes alongside the modern V_P_MIC_TESTCOMM.
+  Either way, it's tiny and not on a hot path. Defer probing semantics until needed.
+- **Three author-column conventions across the family** (schema inconsistency):
+  - `TECHNIK` only (1 col, legacy German naming): V_P_MIC_COMM, V_P_MIC_ORDER_COMM, V_P_MIC_COMMON_MEDIACOMM
+  - `TECH_ID` + `TECHNIK` (modern + legacy duplicate): V_P_MIC_TESTCOMM, V_P_MIC_ISOCOMM, V_P_MIC_MEDIACOMM
+  - `TECHNIK_ID` + `TECHNIK` (legacy variant + legacy): V_P_MIC_THERAPYCOMM (stands alone with TECHNIK_ID)
+- **Cross-module navigation**: comments → V_P_MIC_TEST/V_P_MIC_ISOLATE/V_P_MIC_MEDIA/V_P_MIC_SENSI/V_P_MIC_ACTIVE_ORDER → ACTIVE_AA_ID → V_P_LAB_ORDER. Two-hop minimum to get to the SoftLab order from any comment view.
+- **No FK on V_P_LAB_ORDER directly** — to attach a SoftMic comment to a SoftLab order, you must traverse through V_P_MIC_ACTIVE_ORDER (for order-level) or V_P_MIC_TEST → V_P_MIC_ACTIVE_ORDER (for test-level).
+- **`I1_U1_SORT` on V_P_MIC_ISOCOMM** is a cryptic schema name — likely "isolate-1 / unit-1 sort" preserved from legacy. Schema oddity worth noting but doesn't affect query authoring.
+
 ### V_S_MIC_ORGANISM — Organism setup/reference
 
 | Column | Type | Description |
@@ -2968,6 +3514,30 @@ Single-letter columns (S, T, U, V, W, X, Y, Z, A1–Z1, D–P, F_0–F_9, ZZ1, Z
 - Many analyzers share a middleware connection (e.g., multiple Beckman AU/DxC/Access instruments route through a single Remisol interface like TREM, JREM, EREM, FREM, WFREM).
 - Reference lab interfaces (Quest, Viracor, HistoTrac) use `LISTN_NAME = 'genref'` and `DIR_NAME` like `I/QUEST`, `I/TVCOR`, `I/HIST`.
 - `ORD_WORKSTATION_ID` and `RES_WORKSTATION_ID` link to V_S_LAB_WORKSTATION for mapping instruments to SoftLab workstations.
+
+### V_S_INST_WORKSTATIONS — Instrument↔Workstation bridge
+
+**4 columns total** — many-to-many bridge between V_S_INST_INSTRUMENT and V_S_LAB_WORKSTATION. Volume: 119 rows / 47 distinct workstations / 64 distinct instruments. Verified 2026-05-01.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| AA_ID | NUMBER 22 (NOT NULL) | PK of this bridge row |
+| INSTRUMENT_ID | VARCHAR2 5 | FK by code → V_S_INST_INSTRUMENT.ID |
+| WORKSTATION | VARCHAR2 7 | FK by code → V_S_LAB_WORKSTATION.ID |
+| INSTRUMENT_AA_ID | NUMBER 22 | FK by AA_ID → V_S_INST_INSTRUMENT.AA_ID (1:1 with INSTRUMENT_ID) |
+
+**Notes:**
+
+- **Many-to-many in both directions**:
+  - One workstation can map to multiple instruments (avg 2.53; max **8** at TCHA — TUH Chemistry, where multiple analyzers route under a single workstation banner). Top dense workstations: TCHA (8), ORBG (5), JCHA (5), then a tier of 4-instrument workstations and a long tail of 2–3.
+  - One instrument can map to multiple workstations (avg 1.86). Middleware instruments are the dominant case — e.g., TREM (Remisol) maps to TCHA/THEMA/THEMM/TCHM (4 different workstations), all sharing one INSTRUMENT_AA_ID. Same pattern for JREM, EREM, FREM, WFREM.
+- **Both INSTRUMENT_ID (code) and INSTRUMENT_AA_ID are exposed** — pick whichever fits the join. They have identical distinct counts (64), confirming 1:1 between the two ways of referring to an instrument.
+- **Canonical join pattern** (used in `setup/softlab_instruments.sql`, `setup/epic_test_compendium.sql`, `setup/epic_test_compendium_orderables.sql`):
+  ```sql
+  LEFT JOIN V_S_INST_WORKSTATIONS iws ON iws.WORKSTATION = ws.ID
+  ```
+  Presence of an iws row means the workstation is interfaced to at least one instrument; absence means manual entry / no automation.
+- **Operational interpretation**: workstations like `TCHA` are department-level groupings; the bridge resolves which physical analyzer ran a given test. For "is this workstation interfaced?" use `EXISTS (SELECT 1 FROM V_S_INST_WORKSTATIONS WHERE WORKSTATION = ws.ID)`. For "which instrument ran this test?" join through INSTRUMENT_AA_ID.
 
 ---
 
